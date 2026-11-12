@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# VisionPilot 可选依赖
+#
+# 核心闭环（模拟模式）不需要下面任何一项：
+#   pip install -r requirements-optional.txt
+#
+# 真实桌面控制 + 截图
+#   pyautogui
+#   mss
+#
+# OCR（同时还需要安装 Tesseract 可执行文件）
+#   pytesseract
+#
+# OpenCV 轮廓分析（更丰富的 UI 元素检测）
+#   opencv-python
+#
+# 浏览器自动化（还需执行 `playwright install chromium`）
+#   playwright
+# ---------------------------------------------------------------------------
+pyautogui>=0.9.54; sys_platform == "win32"
+mss>=9.0
+pytesseract>=0.3.10
+opencv-python>=4.9
+playwright>=1.42

@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VisionPilot · GUI Agent 控制台</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --bg-soft: #121a30;
+    --panel: #151f38;
+    --panel-2: #1b2745;
+    --line: #27334f;
+    --text: #e8eefc;
+    --muted: #8fa0c0;
+    --accent: #5b8cff;
+    --accent-2: #22d3a6;
+    --warn: #f5b84b;
+    --bad: #ff6b81;
+    --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 10% -10%, #18244a 0%, var(--bg) 55%);
+    color: var(--text); font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 18px; padding: 18px 26px;
+    border-bottom: 1px solid var(--line); background: rgba(11, 16, 32, .8);
+    position: sticky; top: 0; z-index: 20; backdrop-filter: blur(8px);
+  }
+  .logo {
+    width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+    background: linear-gradient(135deg, var(--accent), #8b5cf6); font-weight: 800; font-size: 18px;
+  }
+  .brand h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  .chips { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    font-size: 12px; padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--muted); white-space: nowrap;
+  }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip.good { border-color: rgba(34, 211, 166, .45); color: var(--accent-2); }
+  .chip.warn { border-color: rgba(245, 184, 75, .4); color: var(--warn); }
+  main { padding: 22px 26px 60px; max-width: 1500px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: minmax(360px, 1.05fr) minmax(360px, 1fr); gap: 18px; }
+  @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: linear-gradient(180deg, rgba(27, 39, 69, .75), rgba(21, 31, 56, .92));
+    border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; min-width: 0;
+  }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 0 0 12px; }
+  .composer textarea {
+    width: 100%; min-height: 74px; resize: vertical; border-radius: 12px; padding: 12px;
+    background: #0d1428; color: var(--text); border: 1px solid var(--line); font: inherit;
+  }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .row .spacer { flex: 1; }
+  button {
+    border: 0; border-radius: 10px; padding: 9px 16px; font-weight: 600; font-size: 13px;
+    background: var(--accent); color: white; cursor: pointer; transition: .15s transform, .15s filter;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:active { transform: translateY(1px); }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  button.ghost:hover { color: var(--text); }
+  button.small { padding: 5px 10px; font-size: 12px; }
+  input[type="number"] {
+    width: 84px; background: #0d1428; color: var(--text); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px;
+  }
+  label.field { color: var(--muted); font-size: 12px; display: flex; gap: 6px; align-items: center; }
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .examples button { background: var(--panel-2); color: var(--muted); font-weight: 500; }
+  .task-list { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow: auto; padding-right: 4px; }
+  .task {
+    display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 12px;
+    border-radius: 12px; border: 1px solid var(--line); background: #101830; cursor: pointer;
+  }
+  .task:hover, .task.active { border-color: var(--accent); background: #131f3d; }
+  .task .goal { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task .meta { color: var(--muted); font-size: 11px; grid-column: 1 / -1; display: flex; gap: 10px; }
+  .status { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: #22304f; color: var(--muted); white-space: nowrap; }
+  .status.completed { background: rgba(34, 211, 166, .15); color: var(--accent-2); }
+  .status.running { background: rgba(91, 140, 255, .18); color: #9db8ff; }
+  .status.failed, .status.aborted, .status.cancelled { background: rgba(255, 107, 129, .14); color: var(--bad); }
+  .status.queued { background: rgba(245, 184, 75, .12); color: var(--warn); }
+  .events {
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.55; height: 360px; overflow: auto;
+    background: #0a1022; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+  }
+  .ev { padding: 2px 0; border-bottom: 1px dashed rgba(39, 51, 79, .55); color: #b9c8e6; word-break: break-word; }
+  .ev .t { color: #5f729a; margin-right: 6px; }
+  .ev .k { color: #9db8ff; font-weight: 600; margin-right: 6px; }
+  .ev.err .k { color: var(--bad); }
+  .ev.ok .k { color: var(--accent-2); }
+  .detail-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .detail-head .goal { font-size: 15px; font-weight: 600; flex: 1; min-width: 220px; }
+  .kv { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin: 8px 0 12px; }
+  .kv b { color: var(--text); font-weight: 600; }
+  .steps { display: flex; flex-direction: column; gap: 8px; }
+  .step {
+    display: grid; grid-template-columns: 26px 1fr; gap: 4px 10px; padding: 9px 11px;
+    border-radius: 10px; background: #101830; border: 1px solid var(--line); font-size: 12px;
+  }
+  .step .idx { color: var(--muted); font-family: var(--mono); grid-row: span 2; }
+  .step .tool { font-family: var(--mono); color: #9db8ff; }
+  .step .obs { color: #a9b8d6; word-break: break-word; }
+  .step.bad { border-color: rgba(255, 107, 129, .4); }
+  .badge { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); margin: 2px 4px 2px 0; }
+  .badge.ok { border-color: rgba(34, 211, 166, .45); color: var(--accent-2); }
+  .badge.bad { border-color: rgba(255, 107, 129, .45); color: var(--bad); }
+  .section-title { font-size: 12px; color: var(--muted); margin: 14px 0 6px; letter-spacing: .06em; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .stat { background: #0f1730; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .stat .v { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .l { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .suggestions { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .suggestions li { font-size: 12px; padding: 8px 10px; border-radius: 9px; background: #0f1730; border-left: 3px solid var(--accent); color: #c7d3ea; }
+  .suggestions li.high { border-left-color: var(--bad); }
+  .suggestions li.medium { border-left-color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+  td.mono { font-family: var(--mono); }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 12px; padding: 14px 4px; }
+  .plan { font-size: 12px; color: #c7d3ea; display: flex; flex-direction: column; gap: 5px; }
+  .plan .p { display: flex; gap: 8px; }
+  .plan .p .n { color: var(--muted); font-family: var(--mono); }
+  .plan .p .s { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #22304f; color: var(--muted); }
+  .plan .p.done .s { background: rgba(34, 211, 166, .16); color: var(--accent-2); }
+  .plan .p.failed .s { background: rgba(255, 107, 129, .16); color: var(--bad); }
+  details.tool { border-bottom: 1px solid var(--line); padding: 7px 0; font-size: 12px; }
+  details.tool summary { cursor: pointer; color: #cfdbf4; }
+  details.tool .desc { color: var(--muted); margin: 5px 0; }
+  .toast {
+    position: fixed; right: 22px; bottom: 22px; background: #1c2b4d; border: 1px solid var(--line);
+    padding: 10px 14px; border-radius: 10px; font-size: 12px; opacity: 0; transform: translateY(8px);
+    transition: .2s; pointer-events: none; z-index: 50;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .fade { animation: fade .25s ease; }
+  @keyframes fade { from { opacity: .4; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">VP</div>
+  <div class="brand">
+    <h1>VisionPilot · GUI Agent 控制台</h1>
+    <p>Observe → Understand → Plan → Act → Verify → Learn</p>
+  </div>
+  <div class="chips" id="chips">
+    <span class="chip">连接中…</span>
+  </div>
+</header>
+
+<main>
+  <div class="grid">
+    <section class="card composer">
+      <h2>新建任务</h2>
+      <textarea id="goal" placeholder="用自然语言描述目标，例如：打开记事本，输入 hello，然后保存"></textarea>
+      <div class="row">
+        <label class="field">最大步数 <input id="maxSteps" type="number" min="1" max="100" placeholder="默认" /></label>
+        <span class="spacer"></span>
+        <button id="runBtn">运行任务</button>
+      </div>
+      <div class="examples">
+        <button data-demo="notes">记事本演示</button>
+        <button data-demo="explorer">文件浏览演示</button>
+        <button data-demo="settings">设置演示</button>
+        <button data-demo="english">英文演示</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>实时事件流 <span class="muted" style="text-transform:none;letter-spacing:0">（WebSocket）</span></h2>
+      <div class="events" id="events"><div class="empty">等待事件…</div></div>
+    </section>
+  </div>
+
+  <div class="grid" style="margin-top:18px">
+    <section class="card">
+      <h2>任务列表</h2>
+      <div class="task-list" id="taskList"><div class="empty">还没有任务</div></div>
+    </section>
+    <section class="card" id="detailCard">
+      <h2>任务详情</h2>
+      <div id="detail"><div class="empty">选择左侧任务查看执行步骤、验证结果与恢复过程</div></div>
+    </section>
+  </div>
+
+  <div class="grid" style="margin-top:18px">
+    <section class="card">
+      <h2>运行统计</h2>
+      <div class="stats" id="stats"><div class="empty">加载中…</div></div>
+      <ul class="suggestions" id="suggestions"></ul>
+    </section>
+    <section class="card">
+      <h2>技能库</h2>
+      <div id="skills"><div class="empty">加载中…</div></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:18px">
+    <h2>工具注册表</h2>
+    <div id="tools"><div class="empty">加载中…</div></div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const state = { health: null, tasks: [], selected: null, detail: null, events: [] };
+
+  const STATUS_TEXT = {
+    queued: "排队", running: "执行中", completed: "已完成",
+    failed: "失败", aborted: "已中止", cancelled: "已取消",
+  };
+  const EVENT_LABEL = {
+    task_started: "任务开始", observation: "观察", plan_created: "生成计划",
+    step_started: "步骤开始", step_finished: "步骤完成", recovery: "恢复策略",
+    plan_revised: "重新规划", task_finished: "任务结束", task_status: "状态变更",
+    hello: "已连接", snapshot: "历史快照", pong: "心跳",
+  };
+
+  function esc(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function toast(text) {
+    const node = $("toast");
+    node.textContent = text;
+    node.classList.add("show");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => node.classList.remove("show"), 2600);
+  }
+  async function api(path, options = {}) {
+    const response = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try { detail = (await response.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    return response.json();
+  }
+
+  // ---------------------------------------------------------------- health
+  async function loadHealth() {
+    try {
+      const h = await api("/api/health");
+      state.health = h;
+      const chips = [
+        `<span class="chip ${h.dry_run ? "warn" : "good"}">模式 <b>${h.execution_mode === "live" ? "实时桌面" : "模拟"}</b></span>`,
+        `<span class="chip ${h.llm_ready ? "good" : ""}">LLM <b>${h.llm_ready ? "已配置" : "规则模式"}</b></span>`,
+        `<span class="chip">工具 <b>${h.tools_available}/${h.tools_total}</b></span>`,
+        `<span class="chip">历史 <b>${h.tasks_total}</b> 任务 · <b>${h.episodes}</b> 经验</span>`,
+      ];
+      if (h.synthetic_desktop) chips.push('<span class="chip good">合成桌面</span>');
+      $("chips").innerHTML = chips.join("");
+    } catch (error) {
+      $("chips").innerHTML = `<span class="chip warn">API 不可用：${esc(error.message)}</span>`;
+    }
+  }
+
+  // ----------------------------------------------------------------- tasks
+  async function loadTasks() {
+    try {
+      state.tasks = await api("/api/tasks?limit=40");
+      renderTasks();
+      if (state.selected) {
+        const fresh = state.tasks.find((t) => t.task_id === state.selected);
+        if (fresh) updateDetailHeader(fresh);
+        if (fresh && ["completed", "failed", "aborted", "cancelled"].includes(fresh.status)) {
+          await loadDetail(state.selected, true);
+        }
+      }
+    } catch (error) { /* keep old list */ }
+  }
+  function renderTasks() {
+    const box = $("taskList");
+    if (!state.tasks.length) { box.innerHTML = '<div class="empty">还没有任务</div>'; return; }
+    box.innerHTML = state.tasks.map((task) => `
+      <div class="task ${task.task_id === state.selected ? "active" : ""}" data-id="${esc(task.task_id)}">
+        <div class="goal" title="${esc(task.goal)}">${esc(task.goal)}</div>
+        <span class="status ${esc(task.status)}">${STATUS_TEXT[task.status] || esc(task.status)}</span>
+        <div class="meta">
+          <span>#${esc(task.task_id)}</span>
+          <span>${task.steps} 步</span>
+          <span>${task.duration_ms == null ? "—" : (task.duration_ms / 1000).toFixed(2) + "s"}</span>
+          <span>${esc((task.created_at || "").replace("T", " ").slice(0, 19))}</span>
+        </div>
+      </div>`).join("");
+    box.querySelectorAll(".task").forEach((node) => node.addEventListener("click", () => selectTask(node.dataset.id)));
+  }
+  function updateDetailHeader(task) {
+    const node = $("detail");
+    const head = node.querySelector(".detail-head");
+    if (head) {
+      const status = head.querySelector(".status");
+      status.className = `status ${task.status}`;
+      status.textContent = STATUS_TEXT[task.status] || task.status;
+    }
+  }
+
+  async function selectTask(id) {
+    state.selected = id;
+    renderTasks();
+    await loadDetail(id);
+  }
+
+  async function loadDetail(id, silent = false) {
+    try {
+      const detail = await api(`/api/tasks/${id}`);
+      state.detail = detail;
+      renderDetail(detail);
+    } catch (error) {
+      if (!silent) $("detail").innerHTML = `<div class="empty">加载失败：${esc(error.message)}</div>`;
+    }
+  }
+
+  function renderDetail(task) {
+    const evaluation = task.evaluation || {};
+    const plan = task.plan || {};
+    const criteria = evaluation.criteria || [];
+    const checklist = evaluation.checklist || [];
+    const steps = task.step_records || [];
+    const planSteps = plan.steps || [];
+    const statusText = STATUS_TEXT[task.status] || task.status;
+    const duration = task.duration_ms == null ? "—" : (task.duration_ms / 1000).toFixed(2) + "s";
+
+    const parts = [];
+    parts.push(`
+      <div class="detail-head">
+        <div class="goal">${esc(task.goal)}</div>
+        <span class="status ${esc(task.status)}">${statusText}</span>
+      </div>
+      <div class="kv">
+        <span>任务 <b>#${esc(task.task_id)}</b></span>
+        <span>耗时 <b>${duration}</b></span>
+        <span>步数 <b>${task.steps}</b></span>
+        <span>Token <b>${task.tokens}</b></span>
+        <span>来源 <b>${esc(plan.source || "—")}</b></span>
+      </div>`);
+
+    if (task.summary) parts.push(`<div class="section-title">结果摘要</div><div class="plan"><div>${esc(task.summary)}</div></div>`);
+    if (task.error) parts.push(`<div class="section-title">错误</div><div class="plan"><div style="color:var(--bad)">${esc(task.error)}</div></div>`);
+
+    if (planSteps.length) {
+      parts.push(`<div class="section-title">计划（修订 ${esc(plan.revision || 0)}）</div><div class="plan">`);
+      planSteps.forEach((step, index) => {
+        parts.push(`<div class="p ${esc(step.status || "")}"><span class="n">${index + 1}.</span><span>${esc(step.description || step.tool)}</span><span class="s">${esc(step.status || "pending")}</span></div>`);
+      });
+      parts.push("</div>");
+    }
+
+    if (steps.length) {
+      parts.push(`<div class="section-title">执行步骤</div><div class="steps">`);
+      steps.forEach((step, index) => {
+        const bad = step.ok === false;
+        parts.push(`
+          <div class="step ${bad ? "bad" : ""}">
+            <span class="idx">${index + 1}</span>
+            <span class="tool">${esc(step.tool || "")} ${bad ? "· 失败" : ""}</span>
+            <span class="obs">${esc(step.observation || step.error || "")}</span>
+          </div>`);
+      });
+      parts.push("</div>");
+    }
+
+    if (criteria.length) {
+      parts.push(`<div class="section-title">目标验证（${esc(evaluation.judged_by || "rules")}）</div><div>`);
+      criteria.forEach((criterion) => {
+        parts.push(`<span class="badge ${criterion.matched ? "ok" : "bad"}">${criterion.matched ? "✓" : "✗"} ${esc(criterion.kind)}: ${esc(criterion.value)}</span>`);
+      });
+      parts.push("</div>");
+    }
+    if (checklist.length) {
+      parts.push(`<div class="section-title">检查清单</div><div>`);
+      checklist.forEach((item) => {
+        const done = ["done", "success", "skipped"].includes(item.status);
+        parts.push(`<span class="badge ${done ? "ok" : ""}">${done ? "✓" : "•"} ${esc(item.label)}</span>`);
+      });
+      parts.push("</div>");
+    }
+    $("detail").innerHTML = parts.join("");
+  }
+
+  // ---------------------------------------------------------------- events
+  function addEvent(event) {
+    if (event.type === "pong") return;
+    state.events.push(event);
+    if (state.events.length > 300) state.events.splice(0, state.events.length - 300);
+    const box = $("events");
+    if (state.events.length === 1) box.innerHTML = "";
+    const cls = event.type === "task_finished" && event.success === false ? "err"
+      : (event.type === "step_finished" && event.ok === false) ? "err"
+      : (event.type === "task_finished" && event.success === true) ? "ok" : "";
+    const time = (event.timestamp || "").replace("T", " ").slice(11, 19) || "--:--:--";
+    const label = EVENT_LABEL[event.type] || event.type;
+    let detail = "";
+    if (event.type === "observation") detail = `${event.active_window || ""} · ${event.elements ?? 0} 元素`;
+    else if (event.type === "step_finished") detail = `${event.tool || ""} ${event.ok ? "✓" : "✗"} ${event.observation || ""}`;
+    else if (event.type === "plan_created") detail = `${event.step_count ?? (Array.isArray(event.steps) ? event.steps.length : event.steps) ?? 0} 步 · ${event.source || ""}`;
+    else if (event.type === "step_started") detail = `${event.tool || ""} #${(event.index ?? 0) + 1}`;
+    else if (event.type === "recovery") detail = `${event.action || ""} · ${event.reason || ""}`;
+    else if (event.type === "plan_revised") detail = `${event.reason || ""}`;
+    else if (event.type === "task_started") detail = event.goal || "";
+    else if (event.type === "task_finished") detail = `${event.success ? "成功" : "失败"} · ${event.status || ""}`;
+    else if (event.type === "task_status") detail = `${STATUS_TEXT[event.status] || event.status || ""}`;
+    const taskTag = event.task_id ? `<span class="muted">#${esc(event.task_id)}</span> ` : "";
+    const line = document.createElement("div");
+    line.className = `ev ${cls}`;
+    line.innerHTML = `<span class="t">${time}</span><span class="k">${esc(label)}</span>${taskTag}${esc(detail)}`;
+    box.appendChild(line);
+    while (box.childElementCount > 400) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+
+    if (event.type === "task_started") { loadTasks(); loadHealth(); }
+    if (event.type === "task_finished" || event.type === "task_status") {
+      loadTasks(); loadStats(); loadSkills(); loadHealth();
+      if (state.selected && event.task_id === state.selected) {
+        loadDetail(state.selected, true);
+      }
+    }
+  }
+
+  function connectWs() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${proto}://${location.host}/ws/events${state.selected ? "?task_id=" + encodeURIComponent(state.selected) : ""}`);
+    socket.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data);
+        if (event.type === "snapshot" && Array.isArray(event.events)) {
+          event.events.forEach(addEvent);
+          return;
+        }
+        addEvent(event);
+      } catch (_) {}
+    };
+    socket.onclose = () => setTimeout(connectWs, 2000);
+    socket.onerror = () => socket.close();
+  }
+
+  // ----------------------------------------------------------------- stats
+  async function loadStats() {
+    try {
+      const data = await api("/api/stats");
+      const m = data.metrics || {};
+      const successRate = m.success_rate == null ? 0 : m.success_rate;
+      const cards = [
+        ["经验总数", m.episodes ?? 0],
+        ["成功率", (successRate * 100).toFixed(1) + "%"],
+        ["平均步数", m.avg_steps ?? "—"],
+        ["平均耗时", m.avg_seconds == null ? "—" : Number(m.avg_seconds).toFixed(2) + "s"],
+        ["恢复成功率", m.recovery_rate == null ? "—" : (Number(m.recovery_rate) * 100).toFixed(0) + "%"],
+        ["Token/任务", m.tokens_per_task ?? 0],
+      ];
+      $("stats").innerHTML = cards.map(([label, value]) =>
+        `<div class="stat"><div class="v">${esc(value)}</div><div class="l">${esc(label)}</div></div>`).join("");
+      const suggestions = data.suggestions || [];
+      $("suggestions").innerHTML = suggestions.length
+        ? suggestions.map((s) => `<li class="${esc(s.severity || "")}"><b>${esc(s.title || "")}</b> ${esc(s.detail || "")}</li>`).join("")
+        : "";
+    } catch (error) {
+      $("stats").innerHTML = `<div class="empty">统计不可用：${esc(error.message)}</div>`;
+    }
+  }
+
+  async function loadSkills() {
+    try {
+      const data = await api("/api/skills?limit=20");
+      if (!data.skills.length) { $("skills").innerHTML = '<div class="empty">成功任务会自动沉淀为可复用技能</div>'; return; }
+      $("skills").innerHTML = `<table><thead><tr><th>技能</th><th>使用</th><th>成功率</th><th>版本</th></tr></thead><tbody>${
+        data.skills.map((skill) => `<tr>
+          <td title="${esc(skill.description)}">${esc(skill.name)}</td>
+          <td>${skill.uses}</td>
+          <td>${(skill.success_rate * 100).toFixed(0)}%</td>
+          <td>v${skill.version}</td>
+        </tr>`).join("")}</tbody></table>`;
+    } catch (error) { $("skills").innerHTML = `<div class="empty">技能不可用：${esc(error.message)}</div>`; }
+  }
+
+  async function loadTools() {
+    try {
+      const data = await api("/api/tools");
+      const groups = {};
+      data.tools.forEach((tool) => { (groups[tool.category] ||= []).push(tool); });
+      $("tools").innerHTML = Object.entries(groups).map(([category, tools]) => `
+        <div style="margin-bottom:8px">
+          <div class="section-title" style="margin-top:8px">${esc(category)} · ${tools.length}</div>
+          ${tools.map((tool) => `
+            <details class="tool">
+              <summary>${tool.available ? "●" : "○"} <b class="mono">${esc(tool.name)}</b>
+                <span class="muted">— ${esc(tool.description)}</span>
+                <span class="badge ${tool.available ? "ok" : "bad"}">${tool.available ? "可用" : "缺失依赖"}</span>
+              </summary>
+              <div class="desc">${esc(tool.description)}${tool.unavailable_reason ? " · " + esc(tool.unavailable_reason) : ""}</div>
+              <div class="muted">参数：${tool.parameters.map((p) => esc(p.name) + (p.required ? "*" : "")).join("，") || "无"}</div>
+            </details>`).join("")}
+        </div>`).join("");
+    } catch (error) { $("tools").innerHTML = `<div class="empty">工具不可用：${esc(error.message)}</div>`; }
+  }
+
+  // -------------------------------------------------------------- actions
+  async function submitGoal(goal, maxSteps) {
+    goal = (goal || "").trim();
+    if (!goal) { toast("请先输入任务目标"); return; }
+    try {
+      const payload = { goal };
+      if (maxSteps) payload.max_steps = Number(maxSteps);
+      const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
+      if (created.task_id) {
+        state.selected = created.task_id;
+        renderTasks();
+        await loadDetail(created.task_id, true);
+      }
+      toast("任务已提交");
+      loadTasks();
+      loadHealth();
+    } catch (error) { toast("提交失败：" + error.message); }
+  }
+
+  $("runBtn").addEventListener("click", () => {
+    submitGoal($("goal").value, $("maxSteps").value);
+  });
+  $("goal").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      submitGoal($("goal").value, $("maxSteps").value);
+    }
+  });
+  document.querySelectorAll("[data-demo]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const created = await api("/api/demo", { method: "POST", body: JSON.stringify({ scenario: button.dataset.demo }) });
+        state.selected = created.task_id;
+        renderTasks();
+        await loadDetail(created.task_id, true);
+        toast("已启动演示：" + created.scenario);
+        loadTasks();
+      } catch (error) { toast("演示启动失败：" + error.message); }
+    });
+  });
+
+  // ----------------------------------------------------------------- boot
+  loadHealth();
+  loadTasks();
+  loadStats();
+  loadSkills();
+  loadTools();
+  connectWs();
+  setInterval(loadTasks, 4000);
+  setInterval(loadStats, 15000);
+})();
+</script>
+</body>
+</html>

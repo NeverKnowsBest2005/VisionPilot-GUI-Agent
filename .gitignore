@@ -29,4 +29,6 @@ browser.png
 .idea/
 .vscode/
 .DS_Store
+frontend/node_modules/
+frontend/dist/
 Thumbs.db

@@ -1,5 +1,6 @@
 # VisionPilot 核心依赖（Windows / Python 3.11+）
 fastapi>=0.110,<1.0
+fastapi-cli>=0.0.32
 uvicorn[standard]>=0.29
 pydantic>=2.6,<3.0
 python-dotenv>=1.0

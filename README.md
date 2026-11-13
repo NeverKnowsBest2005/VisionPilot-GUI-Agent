@@ -375,10 +375,10 @@ python main.py run "打开记事本，输入 hello，然后保存"
 python main.py run "..." --max-steps 10 --json
 python main.py tools                         # 查看工具注册表与可用性
 python main.py status                        # 历史任务、成功率、技能与经验
-python main.py serve                         # 启动后端 + 可视化控制台
+fastapi dev                                  # FastAPI 开发服务 + 可视化控制台
 ```
 
-启动服务后访问 <http://127.0.0.1:8765>，即可看到实时事件流、任务详情、统计指标、技能与工具列表；REST 接口位于 `/api/*`，WebSocket 位于 `/ws/events`。`python main.py serve --reload` 适合开发调试。
+启动服务后访问 <http://127.0.0.1:8000>，即可看到实时事件流、任务详情、统计指标、技能与工具列表；REST 接口位于 `/api/*`，WebSocket 位于 `/ws/events`。`fastapi dev` 自动启用开发热重载，应用入口配置在根目录 `pyproject.toml`。前端 Vite 开发代理也默认连接 `8000` 端口。
 
 ### 测试
 
@@ -394,5 +394,5 @@ python -m pytest -q
 - `executor/base.py` 提供统一 Tool 接口、参数校验、风险分级与危险操作确认；文件工具被限制在 `workspace/` 内。
 - `executor/system.py` 的 `system_launch_app` 按应用名在 PATH、注册表 App Paths 与开始菜单快捷方式中定位并直接启动（支持“微信”“记事本”等中文名），避免依赖模拟 Win 键；`executor/native_input.py` 提供 Windows SendInput 鼠标键盘与 Unicode 输入后备。
 - `memory/` 使用 SQLite 保存任务、步骤、经验与知识；`learning/` 从成功轨迹沉淀 Skill，并在后续规划时作为提示注入。
-- `api/` 提供 FastAPI 接口与 WebSocket 事件流，`frontend/index.html` 是不依赖 CDN 的单页控制台。
+- `api/` 提供 FastAPI 接口与 WebSocket 事件流，`frontend/` 使用 Vue 3 + Vite 构建控制台；运行 `cd frontend && npm install && npm run build` 后由 FastAPI 提供 `frontend/dist/`。
 - 当前启发式规划器面向内置演示桌面与常见中文/英文指令；真实桌面上的复杂任务建议配置多模态 LLM。

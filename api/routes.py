@@ -53,7 +53,7 @@ from memory import Database, EpisodicMemory, SemanticMemory
 
 logger = logging.getLogger("visionpilot.api")
 
-FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 DEMO_SCENARIOS: dict[str, str] = {
     "notes": "打开记事本，输入 VisionPilot 已经跑通端到端闭环，然后保存",

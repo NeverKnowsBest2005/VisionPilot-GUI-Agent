@@ -12,6 +12,7 @@
 # 如 .venv 已存在，跳过前两行
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\Activate.ps1
 
 # 开发/测试
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -54,7 +55,7 @@ VISIONPILOT_PLANNER_MODE=auto          # auto | llm | heuristic
 
 - 也支持系统环境变量：`VISIONPILOT_LLM_API_KEY`、`DEEPSEEK_API_KEY`、`OPENAI_API_KEY` 均可作为密钥来源。
 - `.env` 必须放在项目根目录，或启动时用全局参数 `--env-file 路径` 指定。
-- 修改后需重启 `serve` / 重新执行 `run` 才生效。
+- 修改后需重启 `fastapi dev` / 重新执行 `run` 才生效。
 - 是否接入成功可看 `python main.py status` 的 `LLM：` 一行，或网页顶部 `LLM 已配置`。
 - 追求完全离线：`VISIONPILOT_LLM_ENABLED=false`。
 
@@ -69,17 +70,30 @@ VISIONPILOT_PLANNER_MODE=auto          # auto | llm | heuristic
 
 所有命令都在项目根目录执行，使用 `.venv` 里的 Python。
 
+前端使用 Vue 3 + Vite。首次运行或修改前端后，在项目根目录构建一次：
+
+```powershell
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+FastAPI CLI 会提供 `frontend/dist` 中的构建产物。前端开发时可另开终端运行 `cd frontend; npm run dev`，Vite 会将 `/api` 和 `/ws` 请求代理到本地后端。
+
 ### 3.1 Web 控制台 + 后端 API（推荐）
 
 ```powershell
-.\.venv\Scripts\python.exe main.py serve
+fastapi dev
 ```
 
-浏览器访问 **http://127.0.0.1:8765**。
+根目录 `pyproject.toml` 已配置应用入口（`api.routes:app`），无需在命令中重复指定文件路径。FastAPI dev 默认启用代码热重载。
+
+浏览器访问 **http://127.0.0.1:8000**。
 
 同时提供：
 
-- 可视化控制台：`frontend/index.html`
+- Vue 可视化控制台：`frontend/src/`（生产构建输出到 `frontend/dist/`）
 - REST 接口：`/api/*`（路由见 [api/routes.py](api/routes.py)）
 - WebSocket 实时事件：`/ws/events`
 
@@ -87,13 +101,10 @@ VISIONPILOT_PLANNER_MODE=auto          # auto | llm | heuristic
 
 ```powershell
 # 改端口 / 监听地址
-.\.venv\Scripts\python.exe main.py serve --host 0.0.0.0 --port 9000
+fastapi dev --host 0.0.0.0 --port 9000
 
-# 开发热重载
-.\.venv\Scripts\python.exe main.py serve --reload
-
-# 真实桌面模式（全局参数必须放在子命令之前）
-.\.venv\Scripts\python.exe main.py --live serve
+# 真实桌面模式：先在 .env 中设置 VISIONPILOT_EXECUTION_MODE=live
+fastapi dev --port 8765
 ```
 
 > 默认只监听 `127.0.0.1`，没有登录鉴权。改成 `0.0.0.0` 暴露到局域网前请确认网络环境安全。
@@ -173,11 +184,11 @@ VISIONPILOT_SIMULATE_DESKTOP=false
 或启动时加全局参数：
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --live serve
+在 `.env` 中设置 `VISIONPILOT_EXECUTION_MODE=live`，再运行 `fastapi dev --port 8765`。
 .\.venv\Scripts\python.exe main.py --live run "打开记事本"
 ```
 
-> 注意：`--live` 是全局参数，必须写在 `serve` / `run` / `demo` 之前，写在后面会报参数错误。
+> 注意：Web 服务运行模式请在 `.env` 设置；`--live` 是 `main.py` 单任务 CLI 的全局参数。
 
 安全边界（两种模式都生效）：
 
@@ -216,7 +227,7 @@ Remove-Item logs\screenshots\* -Recurse -Force
 
 **Q：网页打不开 / 端口被占用？**
 
-换端口 `--port 9001`，或修改 `.env` 的 `VISIONPILOT_API_PORT`。确认终端里 `serve` 没有报错退出。
+换端口可运行 `fastapi dev --port 9001`。确认终端中的 FastAPI CLI 服务没有报错退出。
 
 **Q：配置了 API Key 但页面仍显示“规则模式”？**
 
@@ -243,7 +254,7 @@ Remove-Item logs\screenshots\* -Recurse -Force
 
 **Q：打开微信 / QQ 等应用失败？**
 
-从 0.1.1 起新增 `system_launch_app`：按应用名在 PATH、注册表 App Paths 和开始菜单快捷方式中查找并直接启动，不再依赖模拟 Win 键打开开始菜单（部分环境下注入的 Win 键会被系统忽略）。`main.py tools` 中显示为可用即表示该工具就绪。修改代码后需要重启 `main.py serve` 才会生效。
+从 0.1.1 起新增 `system_launch_app`：按应用名在 PATH、注册表 App Paths 和开始菜单快捷方式中查找并直接启动，不再依赖模拟 Win 键打开开始菜单（部分环境下注入的 Win 键会被系统忽略）。`main.py tools` 中显示为可用即表示该工具就绪。修改代码后需要重启 `fastapi dev` 才会生效。
 
 **Q：中文输出乱码？**
 
@@ -262,7 +273,7 @@ copy .env.example .env
 # 编辑 .env 填入 DEEPSEEK_API_KEY
 
 # 3. 启动
-.\.venv\Scripts\python.exe main.py serve
+fastapi dev --port 8765
 
 # 4. 打开 http://127.0.0.1:8765
 ```

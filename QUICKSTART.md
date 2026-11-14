@@ -55,7 +55,7 @@ VISIONPILOT_PLANNER_MODE=auto          # auto | llm | heuristic
 
 - 也支持系统环境变量：`VISIONPILOT_LLM_API_KEY`、`DEEPSEEK_API_KEY`、`OPENAI_API_KEY` 均可作为密钥来源。
 - `.env` 必须放在项目根目录，或启动时用全局参数 `--env-file 路径` 指定。
-- 修改后需重启 `fastapi dev` / 重新执行 `run` 才生效。
+- 修改后需重启 `fastapi run` / 重新执行 `run` 才生效。
 - 是否接入成功可看 `python main.py status` 的 `LLM：` 一行，或网页顶部 `LLM 已配置`。
 - 追求完全离线：`VISIONPILOT_LLM_ENABLED=false`。
 
@@ -84,12 +84,16 @@ FastAPI CLI 会提供 `frontend/dist` 中的构建产物。前端开发时可另
 ### 3.1 Web 控制台 + 后端 API（推荐）
 
 ```powershell
-fastapi dev
+fastapi run
 ```
 
-根目录 `pyproject.toml` 已配置应用入口（`api.routes:app`），无需在命令中重复指定文件路径。FastAPI dev 默认启用代码热重载。
+根目录 `pyproject.toml` 已配置应用入口（`api.routes:app`），无需在命令中重复指定文件路径。
 
 浏览器访问 **http://127.0.0.1:8000**。
+
+> **为什么是 `run` 而不是 `dev`？** `fastapi dev` 会自动带 `uvicorn --reload`。Windows 上 reload 模式的事件循环是 `SelectorEventLoop`（见 `uvicorn/loops/asyncio.py` 的 `asyncio_loop_factory`：`use_subprocess=True` 时返回 `SelectorEventLoop`），而 Playwright 只有在 `ProactorEventLoop` 上才能 `create_subprocess_exec` 起 `node.exe`——所以在 `fastapi dev` 下**所有 `browser_*` 工具都会返回 `NotImplementedError`**。桌面、文件、键鼠类工具在 `dev` 下不受影响，只在调试非浏览器逻辑时才用它。
+
+等价的仓库内入口是 `.\.venv\Scripts\python.exe main.py serve`（默认读 `VISIONPILOT_API_HOST`/`VISIONPILOT_API_PORT`，即 `127.0.0.1:8765`，同样不带 reload）；给它加 `--reload` 会退回 `SelectorEventLoop`，浏览器工具同样不可用。
 
 同时提供：
 
@@ -101,10 +105,10 @@ fastapi dev
 
 ```powershell
 # 改端口 / 监听地址
-fastapi dev --host 0.0.0.0 --port 9000
+fastapi run --host 0.0.0.0 --port 9000
 
 # 真实桌面模式：先在 .env 中设置 VISIONPILOT_EXECUTION_MODE=live
-fastapi dev --port 8765
+fastapi run --port 8765
 ```
 
 > 默认只监听 `127.0.0.1`，没有登录鉴权。改成 `0.0.0.0` 暴露到局域网前请确认网络环境安全。
@@ -184,7 +188,7 @@ VISIONPILOT_SIMULATE_DESKTOP=false
 或启动时加全局参数：
 
 ```powershell
-在 `.env` 中设置 `VISIONPILOT_EXECUTION_MODE=live`，再运行 `fastapi dev --port 8765`。
+在 `.env` 中设置 `VISIONPILOT_EXECUTION_MODE=live`，再运行 `fastapi run --port 8765`。
 .\.venv\Scripts\python.exe main.py --live run "打开记事本"
 ```
 
@@ -196,7 +200,7 @@ VISIONPILOT_SIMULATE_DESKTOP=false
 - `fs_delete` 等危险工具默认需要确认：CLI 在子命令前加 `--confirm-dangerous`（如 `main.py --confirm-dangerous run "..."`），HTTP API 创建任务时传 `"confirmed": true`。默认不自动确认任何危险操作。
 - `ALLOW_SHELL=false` 时 `system_run_command` 工具直接不可用；开启后也只允许白名单中的可执行文件（默认 `where,whoami,hostname,findstr`），命令参数不能指向工作区外的路径（含 `findstr /d:` 的目录参数和 `/d:/Windows` 这类根目录写法）。`findstr /f:` 读取的文件列表无法原子校验，会被直接拒绝；工作区存在 junction/符号链接时命令工具也拒绝执行，因为 `findstr /s`、`where /r` 等子进程会跟随链接读到沙箱外。
 - `system_launch_app` 拒绝 `cmd`、`powershell`、`wscript`、`mshta`、`python`、`wt`、`py`、`mintty`、`tclsh` 等 shell/脚本宿主（含 `python3.12`、`javaw` 这类带版本/后缀的变体）；中文别名（如“终端”）和开始菜单快捷方式的实际目标也会检查，`.msi`/`.pif` 目标同样拒绝，避免绕过 `ALLOW_SHELL` 后门执行命令。普通 GUI 应用（如 “FileZilla FTP Client”、“PhpStorm”、“RubyMine”）不会因为名称里含网络工具或解释器前缀而被误拦。
-- 浏览器工具只允许 `http://`、`https://` 与 `about:blank`，`file://` 等协议会被拒绝；WebSocket `/ws/events` 只接受 `VISIONPILOT_CORS_ORIGINS` 中的浏览器源，以及回环地址上的同源页面（`fastapi dev` 的 8000 端口可直接使用）；无 `Origin` 的本地客户端不受影响。将 `VISIONPILOT_CORS_ORIGINS` 设为 `*` 会显式关闭该校验。
+- 浏览器工具只允许 `http://`、`https://` 与 `about:blank`，`file://` 等协议会被拒绝；WebSocket `/ws/events` 只接受 `VISIONPILOT_CORS_ORIGINS` 中的浏览器源，以及回环地址上的同源页面（`fastapi run` 的 8000 端口可直接使用）；无 `Origin` 的本地客户端不受影响。将 `VISIONPILOT_CORS_ORIGINS` 设为 `*` 会显式关闭该校验。
 - 最大步数、单任务超时、重试与重规划次数都有上限。
 
 ---
@@ -229,7 +233,7 @@ Remove-Item logs\screenshots\* -Recurse -Force
 
 **Q：网页打不开 / 端口被占用？**
 
-换端口可运行 `fastapi dev --port 9001`。确认终端中的 FastAPI CLI 服务没有报错退出。
+换端口可运行 `fastapi run --port 9001`。确认终端中的 FastAPI CLI 服务没有报错退出。
 
 **Q：配置了 API Key 但页面仍显示“规则模式”？**
 
@@ -241,6 +245,10 @@ Remove-Item logs\screenshots\* -Recurse -Force
 .\.venv\Scripts\python.exe -m pip install playwright
 .\.venv\Scripts\python.exe -m playwright install chromium
 ```
+
+**Q：`browser_open` / `browser_screenshot` 返回 `NotImplementedError`？**
+
+这不是没装 Playwright，而是事件循环类型不对：Playwright 只能在 `ProactorEventLoop` 上 `create_subprocess_exec` 启动 `node.exe`，而 Windows 下 `fastapi dev`（等价 `uvicorn --reload`）会使用 `SelectorEventLoop`（`uvicorn/loops/asyncio.py` 的 `asyncio_loop_factory(use_subprocess=True)`；实测 `reload=False → ProactorEventLoop`、`reload=True → _WindowsSelectorEventLoop`）。改用 `fastapi run` 或 `python -m uvicorn api.routes:app --port 8000`（都不带 reload）即可，7 个 `browser_*` 工具会恢复正常。
 
 **Q：任务一直卡在 running？**
 
@@ -256,7 +264,7 @@ Remove-Item logs\screenshots\* -Recurse -Force
 
 **Q：打开微信 / QQ 等应用失败？**
 
-从 0.1.1 起新增 `system_launch_app`：按应用名在 PATH、注册表 App Paths 和开始菜单快捷方式中查找并直接启动，不再依赖模拟 Win 键打开开始菜单（部分环境下注入的 Win 键会被系统忽略）。`main.py tools` 中显示为可用即表示该工具就绪。修改代码后需要重启 `fastapi dev` 才会生效。
+从 0.1.1 起新增 `system_launch_app`：按应用名在 PATH、注册表 App Paths 和开始菜单快捷方式中查找并直接启动，不再依赖模拟 Win 键打开开始菜单（部分环境下注入的 Win 键会被系统忽略）。`main.py tools` 中显示为可用即表示该工具就绪。修改代码后需要重启 `fastapi run` 才会生效。
 
 启动失败时先看返回的 `error` 与 `data`：
 
@@ -265,6 +273,25 @@ Remove-Item logs\screenshots\* -Recurse -Force
 - `could not find an installed application named …`：名称没命中。可以改用可执行文件名（`douyin`、`code`）或快捷方式名（`抖音`、`Visual Studio Code`）；名称匹配不区分大小写，也会忽略 “app/程序/客户端” 后缀，并用快捷方式指向的 exe 名反查。
 - `needs administrator rights (requestedExecutionLevel=…)`：目标程序的 manifest 要求提权（或在 `highestAvailable` 下 `CreateProcess` 返回 `WinError 740`）。UAC 同意框显示在安全桌面上，agent 既截不到也点不到，因此工具会**立即拒绝**这种目标而不再空等窗口（`data.needs_admin=true`），恢复策略也不会重试同一步。遇到这类程序（`mmc`、`dcomcnfg`、安装包等）请手动启动并在弹窗里点“是”，然后让任务继续做后面的步骤。
 - 名称里有空格时用引号包住，例如 `"Visual Studio Code"`。
+
+**Q：`system_launch_app` 报 `exited before a visible window appeared (exit code 2147483651)`，或错误里提到 `Low integrity`？**
+
+这是**完整性级别**问题，不是权限不足。Windows 创建进程时会把可执行文件自身的完整性标签应用到新进程，所以如果项目目录（或 `.venv`）被打了 `Low Mandatory Level` 标签，那么即使从普通甚至管理员终端启动，`.venv\Scripts\python.exe` 产出的进程依然是 Low。这类进程写不了 `%APPDATA%\<应用>` 和程序目录，Electron 应用（抖音、微信、VS Code）会在启动器阶段直接退出（`2147483651` = `0x80000003`），商店应用（计算器、画图）也无法激活——和 agent 逻辑无关。
+
+先确认：
+
+```powershell
+icacls . | Select-String Mandatory                  # 项目目录是否带 Low Mandatory Level
+whoami /groups | findstr Mandatory                  # 当前终端是不是 Medium（S-1-16-8192）
+```
+
+修复时只需要把可执行文件所在目录提升到 Medium，源码目录保持原样即可（否则低完整性的工具进程会写不进源码）：
+
+```powershell
+icacls ".venv" /setintegritylevel "(OI)(CI)Medium" /T
+```
+
+进程的完整性级别在创建时就固定了，改完必须重启服务（`fastapi run`）才生效。
 
 **Q：中文输出乱码？**
 
@@ -283,7 +310,7 @@ copy .env.example .env
 # 编辑 .env 填入 DEEPSEEK_API_KEY
 
 # 3. 启动
-fastapi dev --port 8765
+fastapi run --port 8765
 
 # 4. 打开 http://127.0.0.1:8765
 ```

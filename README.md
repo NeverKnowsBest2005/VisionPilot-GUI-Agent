@@ -379,10 +379,14 @@ python main.py run "..." --max-steps 10 --json
 python main.py --confirm-dangerous run "删除 workspace 里的旧文件"
 python main.py tools                         # 查看工具注册表与可用性
 python main.py status                        # 历史任务、成功率、技能与经验
-fastapi dev                                  # FastAPI 开发服务 + 可视化控制台
+fastapi run                                  # FastAPI 服务 + 可视化控制台（推荐）
 ```
 
-启动服务后访问 <http://127.0.0.1:8000>，即可看到实时事件流、任务详情、统计指标、技能与工具列表；REST 接口位于 `/api/*`，WebSocket 位于 `/ws/events`。`fastapi dev` 自动启用开发热重载，应用入口配置在根目录 `pyproject.toml`。前端 Vite 开发代理也默认连接 `8000` 端口。
+启动服务后访问 <http://127.0.0.1:8000>，即可看到实时事件流、任务详情、统计指标、技能与工具列表；REST 接口位于 `/api/*`，WebSocket 位于 `/ws/events`。应用入口配置在根目录 `pyproject.toml`，前端 Vite 开发代理也默认连接 `8000` 端口。
+
+`fastapi run` 与 `fastapi dev` 的差别只有热重载：`dev` 会带上 `uvicorn --reload`，而 Windows 上 reload 模式的事件循环是 `SelectorEventLoop`（`uvicorn/loops/asyncio.py` 的 `asyncio_loop_factory(use_subprocess=True)` 返回 `SelectorEventLoop`），Playwright 只能在 `ProactorEventLoop` 上 `create_subprocess_exec`，因此在 `fastapi dev` 下 7 个 `browser_*` 工具会全部返回 `NotImplementedError`。桌面、文件、键鼠类任务在 `dev` 下不受影响；需要浏览器工具时用 `fastapi run`（或 `python -m uvicorn api.routes:app --port 8000`，同样不带 reload）。
+
+如果 `system_launch_app` 报 `exited before a visible window appeared` 且提示 `Low integrity`，说明服务进程的完整性级别被文件标签降到了 Low（窗口永远出不来），处理方法见 [QUICKSTART 常见问题](QUICKSTART.md) 中的 `icacls ... /setintegritylevel`。
 
 ### 测试
 
@@ -397,7 +401,7 @@ python -m pytest -q
 - `agent/core.py` 是主循环：每次操作后重新截图并做独立验证（`verifier/checker.py`），失败时按 `verifier/recovery.py` 的决策重试、重新观察或重新规划；任务结束由 `verifier/evaluator.py` 按目标条件判定成功，而不是只看工具返回值。
 - `executor/base.py` 提供统一 Tool 接口、参数校验、风险分级与危险操作确认；文件工具被限制在 `workspace/` 内，且目录遍历、复制与删除都不会跟随 junction/符号链接逃逸沙箱；NTFS 备用数据流（`file:stream`）、Win32 尾随空格/点别名与保留设备名（`NUL`、`CON.txt`、`COM1`）也会被拒绝。
 - `executor/system.py` 的 `system_launch_app` 按应用名在 PATH、注册表 App Paths 与开始菜单快捷方式中定位并直接启动（支持“微信”“记事本”等中文名）：名称匹配不区分大小写，会忽略 “app/程序/应用/软件/客户端” 等后缀，也会用快捷方式实际指向的 exe 名反查（“Douyin” → `抖音.lnk`）；启动后默认最多等待 8 秒轮询窗口，按进程映像名、子进程树和窗口标题依次匹配，并用 `SetForegroundWindow`/`AttachThreadInput`/最小化还原/置顶/点击标题栏多级手段真正把窗口切到前台——只有窗口确认在前台才算成功（后台进程的 `SetForegroundWindow` 会被 Windows 静默忽略，旧实现因此报“启动成功”但界面仍停在控制台）。能覆盖 Electron 应用首帧较慢、启动器把窗口交给已运行实例后立即退出等情况，返回 `window_found`、`focused`、窗口标题与 PID，失败时给出可诊断的原因。`...\Microsoft\WindowsApps\` 下的商店应用别名只交给 shell 激活（`CreateProcess` 会以 `0xC0000409` 崩溃），但商店应用的冷启动仍可能超过等待时间，建议对这类应用放宽 `wait`。该工具会拒绝 shell/脚本宿主（含 `mintty`、`tclsh`、`wscript`、`python3.12`、`javaw` 等别名/版本变体与快捷方式目标）以及 `.bat`/`.ps1`/`.msi` 等脚本或安装包；带解释器前缀的普通 GUI 应用（如 PhpStorm、RubyMine）不受影响；`executor/native_input.py` 提供 Windows SendInput 鼠标键盘与 Unicode 输入后备。
-- `executor/browser.py` 只接受 `http://`、`https://` 与 `about:blank`；`file://`、`javascript:`、`data:` 等协议会被拒绝，避免浏览器绕过文件沙箱。
+- `executor/browser.py` 只接受 `http://`、`https://` 与 `about:blank`；`file://`、`javascript:`、`data:` 等协议会被拒绝，避免浏览器绕过文件沙箱。浏览器工具还依赖 Windows 的 `ProactorEventLoop`：`fastapi dev`（等价 `uvicorn --reload`）会使用 `SelectorEventLoop`，Playwright 在其上无法 `create_subprocess_exec`，所有 `browser_*` 都会返回 `NotImplementedError`，因此推荐用 `fastapi run` 启动服务。
 - 需要提权的程序不会被启动：UAC 同意框位于安全桌面（`Winlogon`），本进程既截不到也点不到。`system_launch_app` 会读取目标 exe 的 manifest（`RT_MANIFEST` 资源，非 PE 文件回退到字节扫描），对 `requireAdministrator` 立即返回 `needs_admin` 与具体级别；`highestAvailable`（标准用户其实可以非提权启动）交给 `CreateProcess` 判定，`WinError 740` 同样转为 `needs_admin` 而不是弹出无人应答的 UAC 框。`verifier/recovery.py` 对这类失败直接重规划，不浪费重试次数。
 - 截图启用 DPI 感知并默认捕获主显示器；多显示器环境下如需其他屏幕，应在 `perception/screenshot.py` 中扩展捕获区域。LLM/VLM 返回的坐标会按实际发送图片尺寸缩放到完整截图。
 - `memory/` 使用 SQLite 保存任务、步骤、经验与知识；`learning/` 从成功轨迹沉淀 Skill，并在后续规划时作为提示注入。

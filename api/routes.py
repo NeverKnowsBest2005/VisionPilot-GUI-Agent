@@ -63,6 +63,8 @@ DEMO_SCENARIOS: dict[str, str] = {
     "english": 'open the Notes app and type "hello from VisionPilot"',
 }
 
+# Final statuses a task can report; "cancelling" is the transient state between
+# a cancel request and the agent's next checkpoint.
 TASK_STATUSES = {"queued", "running", "completed", "failed", "aborted", "cancelled"}
 
 
@@ -248,12 +250,19 @@ class TaskManager:
         agent = self._agents.get(task_id)
         if agent is not None:
             agent.cancel()
+            if record.status in {"queued", "running"}:
+                # Show "stopping" immediately: the agent stops at its next
+                # checkpoint (usually within milliseconds) and then reports the
+                # final "aborted" status.
+                record.status = "cancelling"
+                await self._publish_status(record)
             return True
         job = self._jobs.get(task_id)
         if job is not None and not job.done():
             job.cancel()
             record.status = "cancelled"
             record.finished_at = utcnow()
+            await self._publish_status(record)
             return True
         return False
 
@@ -579,6 +588,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     if FRONTEND_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+        # Vite writes absolute asset URLs (/assets/index-<hash>.js), so serving
+        # the dist folder only under /static leaves the console a blank page.
+        assets_dir = FRONTEND_DIR / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:

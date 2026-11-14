@@ -62,6 +62,12 @@ _APP_ALIASES: dict[str, tuple[str, ...]] = {
     "cmd": ("cmd",),
     "终端": ("wt", "windowsterminal", "terminal"),
     "资源管理器": ("explorer",),
+    # LLMs spell Explorer several ways; all of them must reach explorer.exe
+    # instead of burning a step (and a replan) on "not an installed application".
+    "文件资源管理器": ("explorer", "explorer.exe"),
+    "文件管理器": ("explorer", "explorer.exe"),
+    "此电脑": ("explorer", "explorer.exe"),
+    "我的电脑": ("explorer", "explorer.exe"),
     "explorer": ("explorer",),
     "edge": ("msedge", "microsoft edge"),
     "浏览器": ("msedge", "chrome", "firefox"),

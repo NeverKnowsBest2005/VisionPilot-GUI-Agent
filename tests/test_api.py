@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +29,31 @@ def test_health_and_index(settings):
         index = client.get("/")
         assert index.status_code == 200
         assert "VisionPilot" in index.text
+
+
+def test_console_assets_are_served(settings):
+    """A built console must reference assets the server actually serves.
+
+    Vite emits absolute ``/assets/<hash>.js`` URLs; mounting the dist folder
+    only under ``/static`` served the HTML but 404'd every asset, leaving the
+    page blank.
+    """
+
+    dist = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    index = dist / "index.html"
+    if not index.exists():
+        pytest.skip("frontend is not built")
+
+    html = index.read_text(encoding="utf-8")
+    match = re.search(r'src="(/assets/[^"]+\.js)"', html)
+    assert match, "built index.html should reference a hashed bundle"
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        asset = client.get(match.group(1))
+        assert asset.status_code == 200, match.group(1)
+        assert len(asset.content) > 1000
+        assert "javascript" in asset.headers["content-type"]
 
 
 def test_create_task_and_poll_to_completion(settings):

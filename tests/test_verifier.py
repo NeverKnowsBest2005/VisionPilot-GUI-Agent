@@ -160,6 +160,50 @@ def test_evaluator_fails_when_text_never_typed(settings):
     assert result.success is False
 
 
+def test_evaluator_accepts_a_goal_reached_after_a_failed_step(settings):
+    # The final screen shows the folder name, so the task is done: the failed
+    # launch was recovered by a replan and must not flip the verdict.
+    evaluator = TaskEvaluator(settings)
+    state = make_state("你好世界", window="Desktop")
+    steps = [
+        {
+            "tool": "system_launch_app",
+            "arguments": {"name": "文件资源管理器"},
+            "observation": "could not find an installed application named '文件资源管理器'",
+            "ok": False,
+            "planned_step": 0,
+        },
+        {
+            "tool": "keyboard_type",
+            "arguments": {"text": "你好世界"},
+            "observation": "typed 4 characters",
+            "ok": True,
+            "planned_step": 7,
+        },
+    ]
+    result = asyncio.run(
+        evaluator.evaluate("在桌面目录下新建一个名为“你好世界”的空文件夹", state, steps=steps)
+    )
+
+    assert result.success is True
+    assert result.failed_steps == 1
+    assert result.confidence < 0.88
+    assert "recovered" in result.reason
+
+
+def test_evaluator_still_fails_a_step_without_goal_criteria(settings):
+    # Without a verifiable criterion, a failed step still means failure.
+    evaluator = TaskEvaluator(settings)
+    state = make_state("", window="Desktop")
+    steps = [
+        {"tool": "mouse_click", "arguments": {}, "observation": "nothing happened", "ok": False, "planned_step": 0}
+    ]
+    result = asyncio.run(evaluator.evaluate("整理一下桌面", state, steps=steps))
+
+    assert result.success is False
+    assert result.failed_steps == 1
+
+
 def test_recovery_retries_transient_and_replans_on_denial(settings):
     recovery = RecoveryManager(settings)
 

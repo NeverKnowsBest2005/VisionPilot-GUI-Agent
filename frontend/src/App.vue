@@ -6,7 +6,7 @@ import TaskDetail from './components/TaskDetail.vue'
 import EventFeed from './components/EventFeed.vue'
 
 const health = ref(null), tasks = ref([]), selected = ref(null), detail = ref(null)
-const stats = ref({}), skills = ref([]), tools = ref([]), events = ref([]), error = ref('')
+const stats = ref({}), skills = ref([]), tools = ref([]), events = ref([]), error = ref(''), stopping = ref(null)
 let socket, taskTimer, statsTimer, reconnectTimer
 const chips = computed(() => health.value ? [
   `${health.value.execution_mode === 'live' ? '实时桌面' : '模拟模式'}`,
@@ -58,8 +58,22 @@ async function demo(scenario) {
   try { const task = await api('/api/demo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenario }) }); selected.value = task.task_id; await refreshTasks(); await refreshDetail(task.task_id); connect() }
   catch (e) { error.value = `演示启动失败：${e.message}` }
 }
+async function stopTask(id) {
+  if (!id) return
+  error.value = ''
+  stopping.value = id
+  try {
+    const res = await api(`/api/tasks/${id}/cancel`, { method: 'POST' })
+    if (!res.cancelled) error.value = '这个任务已经结束，不需要停止'
+  } catch (e) { error.value = `停止失败：${e.message}` }
+  finally {
+    stopping.value = null
+    await refreshTasks()
+    await refreshDetail(id, true)
+  }
+}
 onMounted(async () => {
-  try { await Promise.all([refreshHealth(), refreshTasks(), refreshStats()]); connect() }
+  try { await Promise.all([refreshHealth(), refreshTasks(), refreshStats()]); if (!selected.value && tasks.value.length) selectTask(tasks.value[0].task_id); connect() }
   catch (e) { error.value = `连接服务失败：${e.message}` }
   taskTimer = setInterval(refreshTasks, 4000); statsTimer = setInterval(refreshStats, 15000)
 })
@@ -72,7 +86,7 @@ onUnmounted(() => { clearInterval(taskTimer); clearInterval(statsTimer); clearTi
     <main>
       <section class="intro"><div><p class="eyebrow">AUTONOMOUS DESKTOP AGENT</p><h1>把目标交给 Agent</h1><p class="sub">观察环境、规划步骤、执行操作，并验证最终结果。</p></div><div class="flow"><span>观察</span><i>→</i><span>规划</span><i>→</i><span>执行</span><i>→</i><span>验证</span><i>→</i><span>学习</span></div></section>
       <p v-if="error" class="alert">{{ error }} <button class="link" @click="error=''">关闭</button></p>
-      <section class="workspace-grid"><div class="left-stack"><TaskComposer @submit="submit" @demo="demo"/><TaskList :tasks="tasks" :selected="selected" @select="selectTask"/></div><div class="right-stack"><TaskDetail :task="detail" :stats="stats" :skills="skills" :tools="tools"/><EventFeed :events="events"/></div></section>
+      <section class="workspace-grid"><div class="left-stack"><TaskComposer @submit="submit" @demo="demo"/><TaskList :tasks="tasks" :selected="selected" :stopping="stopping" @select="selectTask" @cancel="stopTask"/></div><div class="right-stack"><TaskDetail :task="detail" :stats="stats" :skills="skills" :tools="tools" :stopping="!!stopping && detail?.task_id === stopping" @cancel="stopTask"/><EventFeed :events="events"/></div></section>
     </main>
     <footer>VisionPilot <span>·</span> 本地运行的自主桌面自动化</footer>
   </div>

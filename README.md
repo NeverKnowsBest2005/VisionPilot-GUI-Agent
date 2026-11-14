@@ -122,6 +122,11 @@ VisionPilot 采用模块化架构，主要由以下六个模块组成。
 
 Agent 必须通过实际环境反馈验证操作结果，而不是仅根据工具返回值判断任务是否完成。
 
+反过来同样成立：**中途某一步失败，也不等于任务失败**。判定顺序是"终态目标条件"优先于"步骤历史"——只要目标里的可验证条件（应用、文本、文件）在最终画面上全部满足，任务即算完成；期间被重试或重规划救回来的失败步骤只会降低评估置信度（0.88 → 0.8），并在结果摘要里标注 `recovered from N failed step(s)`，不会再让一个已经完成的任务显示为失败。只有在无法从目标里提取出可验证条件时，才退回按步骤成败判定。
+
+同一原则也用于计划展示：重规划（replan）会原地更新同一个计划对象，因此控制台"计划与执行"和最终结果里看到的始终是最后一次重规划后的步骤，而不是最初那版失败的计划。
+
+
 ### 2.6 Learning —— 经验学习模块
 
 负责从历史执行轨迹中提取经验，为后续任务提供优化依据。
@@ -384,6 +389,8 @@ fastapi run                                  # FastAPI 服务 + 可视化控制�
 
 启动服务后访问 <http://127.0.0.1:8000>，即可看到实时事件流、任务详情、统计指标、技能与工具列表；REST 接口位于 `/api/*`，WebSocket 位于 `/ws/events`。应用入口配置在根目录 `pyproject.toml`，前端 Vite 开发代理也默认连接 `8000` 端口。
 
+任务执行中，任务详情右上角与任务列表每一行都有 **停止执行** 按钮（`POST /api/tasks/{task_id}/cancel`）：点击后状态先变为 `cancelling`，agent 会在毫秒级中断当前正在执行的工具调用、截图观察或 LLM 请求，最终以 `aborted` 结束并记录 `task cancelled by user`，已完成的步骤与截图都保留在任务详情里。
+
 `fastapi run` 与 `fastapi dev` 的差别只有热重载：`dev` 会带上 `uvicorn --reload`，而 Windows 上 reload 模式的事件循环是 `SelectorEventLoop`（`uvicorn/loops/asyncio.py` 的 `asyncio_loop_factory(use_subprocess=True)` 返回 `SelectorEventLoop`），Playwright 只能在 `ProactorEventLoop` 上 `create_subprocess_exec`，因此在 `fastapi dev` 下 7 个 `browser_*` 工具会全部返回 `NotImplementedError`。桌面、文件、键鼠类任务在 `dev` 下不受影响；需要浏览器工具时用 `fastapi run`（或 `python -m uvicorn api.routes:app --port 8000`，同样不带 reload）。
 
 如果 `system_launch_app` 报 `exited before a visible window appeared` 且提示 `Low integrity`，说明服务进程的完整性级别被文件标签降到了 Low（窗口永远出不来），处理方法见 [QUICKSTART 常见问题](QUICKSTART.md) 中的 `icacls ... /setintegritylevel`。
@@ -399,6 +406,7 @@ python -m pytest -q
 ### 实现说明
 
 - `agent/core.py` 是主循环：每次操作后重新截图并做独立验证（`verifier/checker.py`），失败时按 `verifier/recovery.py` 的决策重试、重新观察或重新规划；任务结束由 `verifier/evaluator.py` 按目标条件判定成功，而不是只看工具返回值。
+- 取消是协作式的：`VisionPilotAgent.cancel()` 置位取消标志并唤醒内部的 `_cancel_event`，主循环用 `_cancel_aware()` 把每个 `await`（工具调用、观察、规划、验证、重规划）与取消事件竞速，输掉的一方被 `cancel()` 并以 `TaskAborted` 退出，因此不必等单个步骤的 30 秒超时；`_settle()` 的步间等待同样可被取消事件打断。
 - `executor/base.py` 提供统一 Tool 接口、参数校验、风险分级与危险操作确认；文件工具被限制在 `workspace/` 内，且目录遍历、复制与删除都不会跟随 junction/符号链接逃逸沙箱；NTFS 备用数据流（`file:stream`）、Win32 尾随空格/点别名与保留设备名（`NUL`、`CON.txt`、`COM1`）也会被拒绝。
 - `executor/system.py` 的 `system_launch_app` 按应用名在 PATH、注册表 App Paths 与开始菜单快捷方式中定位并直接启动（支持“微信”“记事本”等中文名）：名称匹配不区分大小写，会忽略 “app/程序/应用/软件/客户端” 等后缀，也会用快捷方式实际指向的 exe 名反查（“Douyin” → `抖音.lnk`）；启动后默认最多等待 8 秒轮询窗口，按进程映像名、子进程树和窗口标题依次匹配，并用 `SetForegroundWindow`/`AttachThreadInput`/最小化还原/置顶/点击标题栏多级手段真正把窗口切到前台——只有窗口确认在前台才算成功（后台进程的 `SetForegroundWindow` 会被 Windows 静默忽略，旧实现因此报“启动成功”但界面仍停在控制台）。能覆盖 Electron 应用首帧较慢、启动器把窗口交给已运行实例后立即退出等情况，返回 `window_found`、`focused`、窗口标题与 PID，失败时给出可诊断的原因。`...\Microsoft\WindowsApps\` 下的商店应用别名只交给 shell 激活（`CreateProcess` 会以 `0xC0000409` 崩溃），但商店应用的冷启动仍可能超过等待时间，建议对这类应用放宽 `wait`。该工具会拒绝 shell/脚本宿主（含 `mintty`、`tclsh`、`wscript`、`python3.12`、`javaw` 等别名/版本变体与快捷方式目标）以及 `.bat`/`.ps1`/`.msi` 等脚本或安装包；带解释器前缀的普通 GUI 应用（如 PhpStorm、RubyMine）不受影响；`executor/native_input.py` 提供 Windows SendInput 鼠标键盘与 Unicode 输入后备。
 - `executor/browser.py` 只接受 `http://`、`https://` 与 `about:blank`；`file://`、`javascript:`、`data:` 等协议会被拒绝，避免浏览器绕过文件沙箱。浏览器工具还依赖 Windows 的 `ProactorEventLoop`：`fastapi dev`（等价 `uvicorn --reload`）会使用 `SelectorEventLoop`，Playwright 在其上无法 `create_subprocess_exec`，所有 `browser_*` 都会返回 `NotImplementedError`，因此推荐用 `fastapi run` 启动服务。

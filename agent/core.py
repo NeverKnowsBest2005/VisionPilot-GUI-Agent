@@ -8,7 +8,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypeVar
 
 from agent.planner import Planner
 from agent.reasoning import LLMClient, ReasoningEngine
@@ -29,6 +29,7 @@ from verifier import Checker, RecoveryAction, RecoveryManager, TaskEvaluator
 logger = logging.getLogger("visionpilot.agent")
 
 EventCallback = Callable[[dict[str, Any]], Any]
+_T = TypeVar("_T")
 
 # Tools whose effect is not reliably visible in a desktop screenshot. When the
 # tool reports success but visual verification is inconclusive, the structured
@@ -128,6 +129,7 @@ class VisionPilotAgent:
         self.events: deque[dict[str, Any]] = deque(maxlen=800)
         self._event_callback = event_callback
         self._cancelled = False
+        self._cancel_event = asyncio.Event()
         self._running = False
 
     # ------------------------------------------------------------ lifecycle
@@ -136,8 +138,16 @@ class VisionPilotAgent:
         return self._running
 
     def cancel(self) -> None:
-        """Ask the running task to stop at the next safe point."""
+        """Ask the running task to stop at the next safe point.
+
+        The flag is checked between steps, and ``_cancel_event`` interrupts the
+        step that is in flight (tool call, observation or LLM request), so a
+        cancel takes effect in milliseconds instead of after a full step.
+        """
+        if self._cancelled:
+            return
         self._cancelled = True
+        self._cancel_event.set()
         logger.info("cancellation requested for task %s", self.task_id)
 
     async def aclose(self) -> None:
@@ -173,6 +183,7 @@ class VisionPilotAgent:
         settings = self.settings
         self._running = True
         self._cancelled = False
+        self._cancel_event.clear()
         self._reset_llm_counters()
 
         task_id = self.episodic.start_task(
@@ -199,10 +210,12 @@ class VisionPilotAgent:
         evaluation: Any = None
         plan = Plan(goal=goal, steps=[])
         try:
-            observation = await self._observe(state)
+            observation = await self._cancel_aware(self._observe(state))
             state.phase = Phase.PLANNING
             hints = self._memory_hints(goal)
-            plan = await self.planner.create_plan(goal, observation, hints=hints)
+            plan = await self._cancel_aware(
+                self.planner.create_plan(goal, observation, hints=hints)
+            )
             state.plan = plan
             await self._emit(
                 "plan_created",
@@ -222,11 +235,13 @@ class VisionPilotAgent:
 
             state.phase = Phase.VERIFYING
             if state.current_state is not None:
-                evaluation = await self.evaluator.evaluate(
-                    goal,
-                    state.current_state,
-                    steps=working.steps,
-                    plan=[step.as_dict() for step in plan.steps],
+                evaluation = await self._cancel_aware(
+                    self.evaluator.evaluate(
+                        goal,
+                        state.current_state,
+                        steps=working.steps,
+                        plan=[step.as_dict() for step in plan.steps],
+                    )
                 )
                 state.evaluation = evaluation.as_dict()
                 await self._emit("evaluation", evaluation=evaluation.as_dict())
@@ -372,29 +387,33 @@ class VisionPilotAgent:
                     simulated=settings.dry_run,
                 )
             else:
-                result = await self.registry.execute(
-                    step.tool,
-                    arguments,
-                    context,
-                    timeout=settings.adaptive_step_timeout_sec,
+                result = await self._cancel_aware(
+                    self.registry.execute(
+                        step.tool,
+                        arguments,
+                        context,
+                        timeout=settings.adaptive_step_timeout_sec,
+                    )
                 )
 
             step.duration_ms = result.duration_ms
             step.observation = result.to_observation()
             await self._settle()
-            after = await self._observe(state)
+            after = await self._cancel_aware(self._observe(state))
             working.observe(
                 self._observation_summary(after), after.signature(), after.active_window
             )
 
             outcome = None
             if settings.enable_verification:
-                outcome = await self.checker.check(
-                    before=before,
-                    after=after,
-                    action=step.as_dict(),
-                    expectation=step.expect,
-                    tool_result=result,
+                outcome = await self._cancel_aware(
+                    self.checker.check(
+                        before=before,
+                        after=after,
+                        action=step.as_dict(),
+                        expectation=step.expect,
+                        tool_result=result,
+                    )
                 )
             passed = _verification_passed(
                 step, result, outcome, settings.enable_verification
@@ -481,21 +500,28 @@ class VisionPilotAgent:
             if decision.action is RecoveryAction.RE_OBSERVE:
                 state.recoveries += 1
                 await asyncio.sleep(0.2)
-                before = await self._observe(state)
+                before = await self._cancel_aware(self._observe(state))
                 continue
 
             if decision.action is RecoveryAction.REPLAN:
-                revised = await self.planner.replan(
-                    state.goal,
-                    after,
-                    plan,
-                    decision.reason,
-                    history=working.recent_steps_text(),
+                revised = await self._cancel_aware(
+                    self.planner.replan(
+                        state.goal,
+                        after,
+                        plan,
+                        decision.reason,
+                        history=working.recent_steps_text(),
+                    )
                 )
                 if revised is None or not revised.steps:
                     return False, "failed", f"recovery could not find another way: {decision.reason}"
-                revised.revision = plan.revision + 1
-                plan = revised
+                # Update the plan in place: the caller keeps a reference to this
+                # object for the result, the evaluator checklist and the UI, so
+                # rebinding it here would report the stale first attempt.
+                plan.steps = revised.steps
+                plan.source = revised.source
+                plan.reasoning = revised.reasoning
+                plan.revision = plan.revision + 1
                 state.plan = plan
                 replans_used += 1
                 state.replans += 1
@@ -519,6 +545,37 @@ class VisionPilotAgent:
         return False, "max_steps", f"reached the {step_budget}-step limit without finishing"
 
     # -------------------------------------------------------------- helpers
+    async def _cancel_aware(self, awaitable: Awaitable[_T]) -> _T:
+        """Await ``awaitable``, aborting the task as soon as the user cancels.
+
+        Tool calls, observations and LLM requests go through here: a step can
+        take up to ``adaptive_step_timeout_sec`` (30 s by default), which is far
+        too long to wait for when the user already knows the plan is wrong.
+        """
+        if self._cancelled:
+            if inspect.iscoroutine(awaitable):
+                awaitable.close()
+            raise TaskAborted()
+        work = asyncio.ensure_future(awaitable)
+        stop = asyncio.ensure_future(self._cancel_event.wait())
+        try:
+            await asyncio.wait({work, stop}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            work.cancel()
+            raise
+        finally:
+            stop.cancel()
+        if not work.done():
+            work.cancel()
+            try:
+                await work
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - the step is being abandoned
+                logger.debug("cancelled step raised while stopping", exc_info=True)
+            raise TaskAborted()
+        return work.result()
+
     async def _observe(self, state: AgentState) -> GUIState:
         state.phase = Phase.OBSERVING
         observation = await self.perception.observe()
@@ -538,8 +595,13 @@ class VisionPilotAgent:
         delay = float(self.settings.step_settle_seconds)
         if self.settings.dry_run:
             delay = min(delay, 0.05)
-        if delay > 0:
-            await asyncio.sleep(delay)
+        if delay <= 0:
+            return
+        try:
+            await asyncio.wait_for(self._cancel_event.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            return
+        raise TaskAborted()
 
     def _ground(
         self, tool: str, arguments: dict[str, Any], gui_state: GUIState | None

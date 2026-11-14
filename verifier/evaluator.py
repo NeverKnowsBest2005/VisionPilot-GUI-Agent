@@ -141,14 +141,25 @@ class TaskEvaluator:
                 checklist=checklist,
                 failed_steps=failed_steps,
             )
-        elif mandatory and not missing and failed_steps == 0:
+        elif mandatory and not missing:
+            # The goal criteria are visible on the final screen, so the task is
+            # done - even if an earlier attempt failed and was recovered by a
+            # retry or a replan.  Recovered failures lower the confidence
+            # instead of flipping the verdict: recovery is a feature of the
+            # agent, not a reason to report the finished task as failed.
+            recovered = (
+                f" (recovered from {failed_steps} failed step"
+                f"{'s' if failed_steps != 1 else ''})"
+                if failed_steps
+                else ""
+            )
             result = EvaluationResult(
                 success=True,
-                confidence=0.88,
-                reason="all goal criteria are visible in the final screen",
+                confidence=0.88 if failed_steps == 0 else 0.8,
+                reason="all goal criteria are visible in the final screen" + recovered,
                 criteria=criteria,
                 checklist=checklist,
-                failed_steps=0,
+                failed_steps=failed_steps,
             )
         elif mandatory and missing:
             result = EvaluationResult(

@@ -90,6 +90,22 @@ def test_shortcut_lookup_matches_the_target_executable(tmp_path, monkeypatch):
     assert system_tools._shortcut_for("spotify") is None
 
 
+def test_explorer_aliases_reach_explorer_exe():
+    for spoken in ("文件资源管理器", "文件管理器", "资源管理器", "此电脑", "我的电脑"):
+        candidates = system_tools._app_candidates(spoken)
+        assert any(Path(candidate).stem.casefold() == "explorer" for candidate in candidates), spoken
+
+
+@pytest.mark.skipif(os.name != "nt", reason="resolves Start Menu entries")
+def test_explorer_aliases_resolve_on_windows():
+    for spoken in ("文件资源管理器", "此电脑"):
+        resolved = system_tools._resolve_app(spoken)
+        assert resolved is not None, spoken
+        kind, path = resolved
+        assert kind in {"executable", "shortcut"}
+        assert Path(path).name.casefold() == "explorer.exe" or Path(path).stem.casefold() == "explorer"
+
+
 # --------------------------------------------------------------- polling
 FAKE_EXE = Path("C:/nonexistent-visionpilot/douyin.exe")
 

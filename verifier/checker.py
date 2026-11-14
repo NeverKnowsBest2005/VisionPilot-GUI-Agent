@@ -21,6 +21,33 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = logging.getLogger("visionpilot.verifier.checker")
 
+# Tools whose result cannot be judged from the desktop screenshot.  Their
+# structured ``ToolResult`` is authoritative: retrying them because "the screen
+# looks identical" duplicates non-idempotent work (a second fs_write append, a
+# second browser click, ...).
+_NON_VISUAL_TOOLS = {
+    "mouse_position",
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_mkdir",
+    "fs_move",
+    "fs_copy",
+    "fs_delete",
+    "fs_search",
+    "fs_info",
+    "system_info",
+    "system_wait",
+    "system_run_command",
+    "browser_open",
+    "browser_click",
+    "browser_fill",
+    "browser_press",
+    "browser_get_text",
+    "browser_screenshot",
+    "browser_close",
+}
+
 
 @dataclass
 class CheckOutcome:
@@ -162,6 +189,17 @@ class Checker:
                 "active_window": after.active_window,
             }
         )
+
+        tool_name = str(action.get("tool") or "")
+        if tool_ok and tool_name in _NON_VISUAL_TOOLS and not expect:
+            # With no explicit expectation, a non-visual tool's own result is
+            # the best evidence available.  An explicit expectation still has
+            # to be checked below: silently skipping it would mark unverified
+            # work as done.
+            reasons.append(
+                f"tool '{tool_name}' succeeded; its effect is not reliably visible on screen"
+            )
+            return CheckOutcome("success", 0.8, reasons, evidence)
 
         # Explicit expected text.
         text_want = expect.get("text") or expect.get("contains") or expect.get("expect_text")

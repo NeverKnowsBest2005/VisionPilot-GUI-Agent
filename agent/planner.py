@@ -113,7 +113,11 @@ class Planner:
             )
             revised = self._plan_from_payload(payload, goal, source="llm")
             if revised is not None and revised.steps:
-                return revised
+                problems = self.validate_plan(revised)
+                if problems:
+                    logger.info("revised LLM plan discarded: %s", "; ".join(problems))
+                else:
+                    return revised
 
         return self._heuristic_revision(goal, state, plan, failure)
 
@@ -135,7 +139,7 @@ class Planner:
             if not tool.is_available():
                 problems.append(f"step {index} tool '{step.tool}' is unavailable")
             try:
-                tool.validate_arguments(dict(step.arguments or {}))
+                tool.validate_arguments(dict(step.arguments or {}), allow_grounding=True)
             except Exception as exc:  # noqa: BLE001
                 problems.append(f"step {index} arguments invalid: {exc}")
         return problems
@@ -150,16 +154,19 @@ class Planner:
         if not isinstance(raw_steps, list):
             return None
         steps: list[PlanStep] = []
-        for item in raw_steps[: self.settings.max_steps]:
+        dropped = 0
+        for item in raw_steps[: self.settings.max_steps + 1]:
             if isinstance(item, PlanStep):
                 steps.append(item)
                 continue
             if not isinstance(item, dict):
+                dropped += 1
                 continue
             tool = str(item.get("tool") or "").strip()
             if not tool and item.get("action") in self.registry.names():
                 tool = str(item["action"])
             if tool not in self.registry.names():
+                dropped += 1
                 continue
             arguments = item.get("arguments") or item.get("args") or {}
             if not isinstance(arguments, dict):
@@ -176,6 +183,11 @@ class Planner:
                     expect=expect if isinstance(expect, dict) else None,
                 )
             )
+        if dropped:
+            # A plan with silently removed steps is a different plan; fall back
+            # to the heuristic planner instead of executing a truncated one.
+            logger.info("LLM plan discarded: %d unusable step(s)", dropped)
+            return None
         if not steps:
             return None
         return Plan(

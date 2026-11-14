@@ -25,6 +25,34 @@ from executor.base import (
 logger = logging.getLogger("visionpilot.executor.browser")
 
 _DEFAULT_TIMEOUT_MS = 15_000
+_ALLOWED_URL_PREFIXES = ("http://", "https://")
+_BLOCKED_URL_SCHEMES = ("file:", "javascript:", "data:", "vbscript:", "ftp:", "mailto:")
+
+
+def normalise_url(url: str) -> str:
+    """Validate/normalise a browser URL.
+
+    Only ``http``, ``https`` and ``about:blank`` are allowed.  Notably
+    ``file://`` is rejected: the sandbox protects filesystem tools, and the
+    browser must not become a way to read local files.
+    """
+    text = str(url or "").strip()
+    if not text:
+        raise ValueError("url is required")
+    lowered = text.lower()
+    if lowered.startswith(_BLOCKED_URL_SCHEMES):
+        raise ValueError(
+            f"unsupported URL scheme in {text!r}; only http://, https:// and about:blank are allowed"
+        )
+    if lowered.startswith(_ALLOWED_URL_PREFIXES):
+        return text
+    if lowered == "about:blank" or lowered.startswith("about:blank?"):
+        return text
+    if "://" in text or lowered.startswith("about:"):
+        raise ValueError(
+            f"unsupported URL scheme in {text!r}; only http://, https:// and about:blank are allowed"
+        )
+    return "https://" + text.lstrip("/")
 
 
 def playwright_available() -> bool:
@@ -53,8 +81,12 @@ class BrowserManager:
     async def page(self) -> Any:
         loop = asyncio.get_running_loop()
         if self._loop is not loop:
-            # A previous loop (test or reload) owns the old objects; drop them.
-            self._playwright = self._browser = self._page = None
+            # A previous loop (test or reload) owns the old objects; close what
+            # we can and start fresh on this loop.
+            try:
+                await self.close()
+            except Exception:  # noqa: BLE001 - objects may belong to a dead loop
+                pass
             self._loop = loop
         if self._page is not None:
             return self._page
@@ -62,10 +94,14 @@ class BrowserManager:
         from playwright.async_api import async_playwright
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=self.headless)
-        context = await self._browser.new_context(viewport={"width": 1280, "height": 800})
-        self._page = await context.new_page()
-        self._page.set_default_timeout(_DEFAULT_TIMEOUT_MS)
+        try:
+            self._browser = await self._playwright.chromium.launch(headless=self.headless)
+            context = await self._browser.new_context(viewport={"width": 1280, "height": 800})
+            self._page = await context.new_page()
+            self._page.set_default_timeout(_DEFAULT_TIMEOUT_MS)
+        except Exception:
+            await self.close()
+            raise
         logger.info("browser started (headless=%s)", self.headless)
         return self._page
 
@@ -89,8 +125,10 @@ class BrowserManager:
 # Tool implementations
 # ---------------------------------------------------------------------------
 async def _open(context: ToolContext, manager: BrowserManager, url: str) -> ToolResult:
-    if not url.startswith(("http://", "https://", "file://", "about:")):
-        url = "https://" + url
+    try:
+        url = normalise_url(url)
+    except ValueError as exc:
+        return ToolResult(tool="browser_open", ok=False, error=str(exc))
     try:
         page = await manager.page()
         response = await page.goto(url, wait_until="domcontentloaded")
@@ -199,7 +237,7 @@ def build_browser_tools(manager: BrowserManager | None = None) -> list[Tool]:
     tools: list[Tool] = [
         FunctionTool(
             name="browser_open",
-            description="Open a URL in the automation browser.",
+            description="Open an http(s) URL in the automation browser (file:// is rejected).",
             category="browser",
             danger="caution",
             available=available,

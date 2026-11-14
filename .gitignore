@@ -15,6 +15,16 @@ htmlcov/
 .env.local
 .env.*.local
 
+# 本地临时/测试/审计产物（统一收进 .scratch/，整目录可安全删除）
+.scratch/
+pytest-of-*/
+pytest-tmp*/
+tmp*/
+vp_*/
+vpaudit*/
+vpchk*/
+vporigin*/
+
 # 运行时产物
 logs/
 workspace/

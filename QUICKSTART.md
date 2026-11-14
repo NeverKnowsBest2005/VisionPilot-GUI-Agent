@@ -192,10 +192,12 @@ VISIONPILOT_SIMULATE_DESKTOP=false
 
 安全边界（两种模式都生效）：
 
-- 文件工具被限制在 `workspace/` 内，禁止 `../` 越界。
-- `fs_delete`、`system_run_command` 等危险工具默认需要确认；`ALLOW_SHELL=false` 时命令工具直接拒绝。
+- 文件工具被限制在 `workspace/` 内，禁止 `../` 越界；递归遍历、复制和删除不会跟随指向沙箱外的 junction/符号链接，NTFS 备用数据流（`file:stream`）、尾随空格/点别名和保留设备名（`NUL`、`CON.txt`、`COM1`）也会被拒绝。
+- `fs_delete` 等危险工具默认需要确认：CLI 在子命令前加 `--confirm-dangerous`（如 `main.py --confirm-dangerous run "..."`），HTTP API 创建任务时传 `"confirmed": true`。默认不自动确认任何危险操作。
+- `ALLOW_SHELL=false` 时 `system_run_command` 工具直接不可用；开启后也只允许白名单中的可执行文件（默认 `where,whoami,hostname,findstr`），命令参数不能指向工作区外的路径（含 `findstr /d:` 的目录参数和 `/d:/Windows` 这类根目录写法）。`findstr /f:` 读取的文件列表无法原子校验，会被直接拒绝；工作区存在 junction/符号链接时命令工具也拒绝执行，因为 `findstr /s`、`where /r` 等子进程会跟随链接读到沙箱外。
+- `system_launch_app` 拒绝 `cmd`、`powershell`、`wscript`、`mshta`、`python`、`wt`、`py`、`mintty`、`tclsh` 等 shell/脚本宿主（含 `python3.12`、`javaw` 这类带版本/后缀的变体）；中文别名（如“终端”）和开始菜单快捷方式的实际目标也会检查，`.msi`/`.pif` 目标同样拒绝，避免绕过 `ALLOW_SHELL` 后门执行命令。普通 GUI 应用（如 “FileZilla FTP Client”、“PhpStorm”、“RubyMine”）不会因为名称里含网络工具或解释器前缀而被误拦。
+- 浏览器工具只允许 `http://`、`https://` 与 `about:blank`，`file://` 等协议会被拒绝；WebSocket `/ws/events` 只接受 `VISIONPILOT_CORS_ORIGINS` 中的浏览器源，以及回环地址上的同源页面（`fastapi dev` 的 8000 端口可直接使用）；无 `Origin` 的本地客户端不受影响。将 `VISIONPILOT_CORS_ORIGINS` 设为 `*` 会显式关闭该校验。
 - 最大步数、单任务超时、重试与重规划次数都有上限。
-- 默认不自动确认任何危险操作。
 
 ---
 

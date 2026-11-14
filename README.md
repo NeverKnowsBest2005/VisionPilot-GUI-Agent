@@ -364,6 +364,9 @@ copy .env.example .env
 - 留空 `DEEPSEEK_API_KEY` 时，规划器自动降级为规则规划器，验证器使用规则判定。
 - 配置 Key 后，`VISIONPILOT_PLANNER_MODE=auto` 会优先使用 LLM 生成计划；`VISIONPILOT_LLM_ENABLED=false` 可强制离线。
 - 使用真实桌面需 `VISIONPILOT_EXECUTION_MODE=live`；输入后端优先使用 `pyautogui`，Windows 未安装时自动回退到内置 `SendInput`（支持中文输入）。浏览器工具需 `playwright`，OCR 需 Tesseract 与 `pytesseract`。这些后端缺失时会自动标记为不可用，不影响其余功能。
+- `VISIONPILOT_ALLOW_SHELL=false`（默认）时 `system_run_command` 工具不可用；开启后也只允许执行 `VISIONPILOT_SHELL_ALLOWLIST`（逗号分隔，默认 `where,whoami,hostname,findstr`）中的可执行文件，不接受路径或 cmd 内建命令；命令参数（含 `findstr /d:` 目录与 `/d:/Windows` 这类根目录写法）不能指向工作区外；`findstr /f:` 文件列表因无法原子校验而被拒绝，工作区存在 junction/符号链接时命令工具也会拒绝执行。
+- `VISIONPILOT_CONFIRM_DANGEROUS=true` 时，删除文件、移动/覆盖等危险操作需要显式确认：CLI 使用 `--confirm-dangerous`，HTTP API 在创建任务时传 `"confirmed": true`，否则任务会以拒绝结果结束。
+- API 没有鉴权，`confirmed` 只应由受信任的本地客户端发送；默认只允许本机前端源跨域（`VISIONPILOT_CORS_ORIGINS`），WebSocket `/ws/events` 也会校验 `Origin`（不带 `Origin` 的非浏览器客户端不受影响，回环地址上的同源页面不受端口限制）。把 `VISIONPILOT_CORS_ORIGINS` 设为 `*` 会显式关闭 WebSocket 来源校验；保持 `VISIONPILOT_API_HOST=127.0.0.1`，不要暴露到公网。
 
 ### 运行
 
@@ -373,6 +376,7 @@ python main.py demo                          # 4 个内置场景，全部在合�
 python main.py demo --scenario notes         # notes / explorer / settings / english
 python main.py run "打开记事本，输入 hello，然后保存"
 python main.py run "..." --max-steps 10 --json
+python main.py --confirm-dangerous run "删除 workspace 里的旧文件"
 python main.py tools                         # 查看工具注册表与可用性
 python main.py status                        # 历史任务、成功率、技能与经验
 fastapi dev                                  # FastAPI 开发服务 + 可视化控制台
@@ -391,8 +395,10 @@ python -m pytest -q
 ### 实现说明
 
 - `agent/core.py` 是主循环：每次操作后重新截图并做独立验证（`verifier/checker.py`），失败时按 `verifier/recovery.py` 的决策重试、重新观察或重新规划；任务结束由 `verifier/evaluator.py` 按目标条件判定成功，而不是只看工具返回值。
-- `executor/base.py` 提供统一 Tool 接口、参数校验、风险分级与危险操作确认；文件工具被限制在 `workspace/` 内。
-- `executor/system.py` 的 `system_launch_app` 按应用名在 PATH、注册表 App Paths 与开始菜单快捷方式中定位并直接启动（支持“微信”“记事本”等中文名），避免依赖模拟 Win 键；`executor/native_input.py` 提供 Windows SendInput 鼠标键盘与 Unicode 输入后备。
+- `executor/base.py` 提供统一 Tool 接口、参数校验、风险分级与危险操作确认；文件工具被限制在 `workspace/` 内，且目录遍历、复制与删除都不会跟随 junction/符号链接逃逸沙箱；NTFS 备用数据流（`file:stream`）、Win32 尾随空格/点别名与保留设备名（`NUL`、`CON.txt`、`COM1`）也会被拒绝。
+- `executor/system.py` 的 `system_launch_app` 按应用名在 PATH、注册表 App Paths 与开始菜单快捷方式中定位并直接启动（支持“微信”“记事本”等中文名），但会拒绝 shell/脚本宿主（含 `mintty`、`tclsh`、`wscript`、`python3.12`、`javaw` 等别名/版本变体与快捷方式目标）以及 `.bat`/`.ps1`/`.msi` 等脚本或安装包；带解释器前缀的普通 GUI 应用（如 PhpStorm、RubyMine）不受影响；`executor/native_input.py` 提供 Windows SendInput 鼠标键盘与 Unicode 输入后备。
+- `executor/browser.py` 只接受 `http://`、`https://` 与 `about:blank`；`file://`、`javascript:`、`data:` 等协议会被拒绝，避免浏览器绕过文件沙箱。
+- 截图启用 DPI 感知并默认捕获主显示器；多显示器环境下如需其他屏幕，应在 `perception/screenshot.py` 中扩展捕获区域。LLM/VLM 返回的坐标会按实际发送图片尺寸缩放到完整截图。
 - `memory/` 使用 SQLite 保存任务、步骤、经验与知识；`learning/` 从成功轨迹沉淀 Skill，并在后续规划时作为提示注入。
 - `api/` 提供 FastAPI 接口与 WebSocket 事件流，`frontend/` 使用 Vue 3 + Vite 构建控制台；运行 `cd frontend && npm install && npm run build` 后由 FastAPI 提供 `frontend/dist/`。
 - 当前启发式规划器面向内置演示桌面与常见中文/英文指令；真实桌面上的复杂任务建议配置多模态 LLM。

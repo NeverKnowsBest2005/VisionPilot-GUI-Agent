@@ -103,13 +103,11 @@ class Settings(BaseModel):
     shell_timeout_sec: float = 15.0
     shell_allowlist: list[str] = Field(
         default_factory=lambda: [
-            "echo",
-            "dir",
-            "type",
+            # Only real executables.  ``echo``/``dir``/``type``/``date`` are
+            # cmd.exe builtins and cannot be executed without a shell.
             "where",
             "whoami",
             "hostname",
-            "date",
             "findstr",
         ]
     )
@@ -139,7 +137,16 @@ class Settings(BaseModel):
     # ------------------------------------------------------------------- api
     api_host: str = "127.0.0.1"
     api_port: int = 8765
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: [
+            # The API has no authentication and can confirm dangerous
+            # operations, so do not default to a wildcard origin.
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8765",
+            "http://127.0.0.1:8765",
+        ]
+    )
 
     # ------------------------------------------------------------------ logs
     log_dir: Path = PROJECT_ROOT / "logs"

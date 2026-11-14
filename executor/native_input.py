@@ -153,12 +153,23 @@ def _vk_for(key: str) -> int:
         return _VK[name]
     if len(name) == 1:
         # VkKeyScanW returns the virtual key in the low byte and the required
-        # shift state in the high byte; only the key is needed here.
+        # shift state in the high byte.
         scan = _user32.VkKeyScanW(ord(name)) if _IS_WINDOWS else -1
         if scan != -1:
             return scan & 0xFF
         return ord(name.upper())
     raise ValueError(f"unsupported key: {key!r}")
+
+
+def _shift_required(key: str) -> bool:
+    """Whether typing ``key`` requires Shift (e.g. ``!``, ``@``, ``?``)."""
+    name = str(key).strip()
+    if not _IS_WINDOWS or len(name) != 1:
+        return False
+    scan = _user32.VkKeyScanW(ord(name))
+    if scan == -1:
+        return False
+    return bool((scan >> 8) & 0x01)
 
 
 class NativeGui:
@@ -204,9 +215,16 @@ class NativeGui:
     def _tap(self, key: str) -> None:
         # Some shell hotkeys (notably the Windows key) are ignored when the
         # down/up pair arrives in a single SendInput batch.
-        self._send(self._key_input(vk=_vk_for(key)))
-        time.sleep(0.03)
-        self._send(self._key_input(vk=_vk_for(key), flags=_KEYEVENTF_KEYUP))
+        shift = _shift_required(key)
+        if shift:
+            self._send(self._key_input(vk=_VK["shift"]))
+        try:
+            self._send(self._key_input(vk=_vk_for(key)))
+            time.sleep(0.03)
+            self._send(self._key_input(vk=_vk_for(key), flags=_KEYEVENTF_KEYUP))
+        finally:
+            if shift:
+                self._send(self._key_input(vk=_VK["shift"], flags=_KEYEVENTF_KEYUP))
 
     def _absolute(self, x: int, y: int) -> tuple[int, int]:
         width, height = self.size()

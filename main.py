@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="使用真实鼠标键盘（默认 simulate 模拟执行）",
     )
     parser.add_argument("--json", action="store_true", help="输出 JSON，便于脚本消费")
+    parser.add_argument(
+        "--confirm-dangerous",
+        action="store_true",
+        help="显式允许本次任务执行危险操作（删除文件、运行命令等）",
+    )
     sub = parser.add_subparsers(dest="command")
 
     run = sub.add_parser("run", help="运行一条自然语言任务")
@@ -112,7 +117,14 @@ def _print_run_result(result, *, max_steps: int | None = None) -> None:
         print(f"   错误：{result.error}")
 
 
-async def _run_task(settings: Settings, goal: str, max_steps: int | None, task_id: str | None) -> int:
+async def _run_task(
+    settings: Settings,
+    goal: str,
+    max_steps: int | None,
+    task_id: str | None,
+    *,
+    confirmed: bool = False,
+) -> int:
     from agent import VisionPilotAgent
 
     configure_logging(settings, stream=False)
@@ -129,14 +141,19 @@ async def _run_task(settings: Settings, goal: str, max_steps: int | None, task_i
     print(f"VisionPilot · 模式 {banner} · LLM {'已配置' if settings.llm_ready else '规则模式'}")
     print(f"目标：{goal}")
     try:
-        result = await agent.run(goal, task_id=task_id, max_steps=max_steps)
+        result = await agent.run(
+            goal,
+            task_id=task_id,
+            max_steps=max_steps,
+            confirmed=confirmed,
+        )
     finally:
         await agent.aclose()
     _print_run_result(result)
     return 0 if result.success else 1
 
 
-async def _run_demo(settings: Settings, scenario: str) -> int:
+async def _run_demo(settings: Settings, scenario: str, *, confirmed: bool = False) -> int:
     from agent import VisionPilotAgent
 
     configure_logging(settings, stream=False)
@@ -147,7 +164,7 @@ async def _run_demo(settings: Settings, scenario: str) -> int:
         print(f"\n=== 演示 {name} ===\n目标：{goal}")
         agent = VisionPilotAgent(settings)
         try:
-            result = await agent.run(goal)
+            result = await agent.run(goal, confirmed=confirmed)
         finally:
             await agent.aclose()
         _print_run_result(result)
@@ -277,9 +294,17 @@ def main(argv: list[str] | None = None) -> int:
     settings = _settings(args)
 
     if args.command == "run":
-        return asyncio.run(_run_task(settings, args.goal, args.max_steps, args.task_id))
+        return asyncio.run(
+            _run_task(
+                settings,
+                args.goal,
+                args.max_steps,
+                args.task_id,
+                confirmed=args.confirm_dangerous,
+            )
+        )
     if args.command == "demo":
-        return asyncio.run(_run_demo(settings, args.scenario))
+        return asyncio.run(_run_demo(settings, args.scenario, confirmed=args.confirm_dangerous))
     if args.command == "tools":
         return _cmd_tools(settings, args.json)
     if args.command == "status":

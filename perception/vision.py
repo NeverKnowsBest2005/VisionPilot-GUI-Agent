@@ -176,7 +176,7 @@ class VisionAnalyzer:
 
         if self.llm is not None and self.settings.vision_ready and screenshot.has_image:
             try:
-                enriched = await self._ask_vlm(screenshot, state)
+                enriched, sent_width, sent_height = await self._ask_vlm(screenshot, state)
             except Exception as exc:  # noqa: BLE001 - VLM is best effort
                 logger.warning("VLM analysis failed: %s", exc)
                 state.meta["vision_error"] = str(exc)
@@ -185,7 +185,12 @@ class VisionAnalyzer:
                     state.description = enriched.get("description") or state.description
                     if enriched.get("active_window"):
                         state.active_window = str(enriched["active_window"])
-                    self._merge_vlm_elements(state, enriched.get("elements") or [])
+                    self._merge_vlm_elements(
+                        state,
+                        enriched.get("elements") or [],
+                        sent_width=sent_width,
+                        sent_height=sent_height,
+                    )
                     state.vision_used = True
 
         if not state.description:
@@ -193,24 +198,44 @@ class VisionAnalyzer:
         return state
 
     # ------------------------------------------------------------------ VLM
-    async def _ask_vlm(self, screenshot: Screenshot, state: GUIState) -> dict[str, Any]:
-        image = screenshot.to_base64(max_width=self.settings.vision_max_width)
+    async def _ask_vlm(
+        self, screenshot: Screenshot, state: GUIState
+    ) -> tuple[dict[str, Any], int, int]:
+        max_width = int(self.settings.vision_max_width or 0)
+        sent_width, sent_height = screenshot.width, screenshot.height
+        if max_width and sent_width > max_width:
+            # Match ``Screenshot.png_bytes`` exactly so coordinates scale back
+            # without a one-pixel drift.
+            sent_height = max(1, int(sent_height * max_width / sent_width))
+            sent_width = max_width
+        image = screenshot.to_base64(max_width=max_width)
         prompt = (
             "You are the perception module of a desktop GUI agent. Look at the screenshot "
             "and describe the interface precisely.\n"
+            f"The attached image is {sent_width}x{sent_height} pixels.\n"
             "Return ONLY JSON with this shape:\n"
             '{"active_window": str, "description": str, '
             '"elements": [{"label": str, "kind": "button|input|menu|icon|text|window|checkbox", '
             '"approx_x": int, "approx_y": int}]}\n'
-            "Use the visible text as element labels. Keep the description under 80 words. "
+            "Use the visible text as element labels. approx_x/approx_y must be pixel "
+            "coordinates in the attached image. Keep the description under 80 words. "
             "If no window is visible, say so."
         )
         payload = await self.llm.describe_image(image, prompt)  # type: ignore[attr-defined]
         if isinstance(payload, str):
             payload = _extract_json(payload)
-        return payload if isinstance(payload, dict) else {}
+        return (payload if isinstance(payload, dict) else {}), sent_width, sent_height
 
-    def _merge_vlm_elements(self, state: GUIState, items: list[Any]) -> None:
+    def _merge_vlm_elements(
+        self,
+        state: GUIState,
+        items: list[Any],
+        *,
+        sent_width: int | None = None,
+        sent_height: int | None = None,
+    ) -> None:
+        scale_x = state.width / sent_width if sent_width else 1.0
+        scale_y = state.height / sent_height if sent_height else 1.0
         for item in items[:30]:
             if not isinstance(item, dict):
                 continue
@@ -223,10 +248,14 @@ class VisionAnalyzer:
                     existing.role = str(item["kind"])
                 continue
             try:
-                x = int(item.get("approx_x"))
-                y = int(item.get("approx_y"))
+                raw_x = int(item.get("approx_x"))
+                raw_y = int(item.get("approx_y"))
             except (TypeError, ValueError):
                 continue
+            # The VLM sees a downscaled image; map its coordinates back to the
+            # full screenshot so grounding clicks the right pixel.
+            x = max(0, min(state.width - 1, int(round(raw_x * scale_x))))
+            y = max(0, min(state.height - 1, int(round(raw_y * scale_y))))
             state.elements.append(
                 UIElement(
                     kind=str(item.get("kind") or "element"),

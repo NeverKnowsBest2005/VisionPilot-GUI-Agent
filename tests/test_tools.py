@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from executor import ToolContext
+import pytest
+
+from executor import ToolArgumentError, ToolContext
 from perception import SimulatedDesktop
 
 
@@ -97,12 +99,96 @@ def test_system_command_is_disabled_by_default(settings, registry):
     context = ToolContext(settings=settings, desktop=SimulatedDesktop())
     result = run(registry.execute("system_run_command", {"command": "whoami"}, context))
     assert result.ok is False
-    assert result.denied is True
+    assert result.denied is True or "unavailable" in (result.error or "").lower()
+    assert registry.get("system_run_command").is_available() is False
 
 
 def test_launch_app_simulates_in_dry_run(settings, registry):
-    context = ToolContext(settings=settings, desktop=SimulatedDesktop())
+    desktop = SimulatedDesktop()
+    context = ToolContext(settings=settings, desktop=desktop)
     result = run(registry.execute("system_launch_app", {"name": "微信"}, context))
     assert result.ok is True
     assert result.simulated is True
     assert "would launch" in result.output or "disabled" in (result.error or "").lower()
+    assert desktop.active_app == "微信"
+
+
+def test_mouse_click_without_coordinates_uses_pointer(settings, registry):
+    desktop = SimulatedDesktop()
+    context = ToolContext(settings=settings, desktop=desktop)
+    result = run(registry.execute("mouse_click", {"button": "right"}, context))
+    assert result.ok, result.error
+    assert result.data["x"] == desktop.size[0] // 2
+    assert result.data["y"] == desktop.size[1] // 2
+
+    double = run(registry.execute("mouse_double_click", {"x": 90, "y": 240}, context))
+    assert double.ok, double.error
+    assert double.tool == "mouse_double_click"
+
+
+def test_mouse_scroll_works_on_the_simulated_desktop(settings, registry):
+    desktop = SimulatedDesktop()
+    context = ToolContext(settings=settings, desktop=desktop)
+    result = run(registry.execute("mouse_scroll", {"clicks": -3}, context))
+    assert result.ok, result.error
+    assert result.simulated is True
+    assert desktop.scroll_offset == 3
+
+
+def test_boolean_arguments_reject_unknown_strings(settings, registry):
+    context = ToolContext(settings=settings, desktop=SimulatedDesktop())
+    result = run(
+        registry.execute(
+            "fs_write",
+            {"path": "x.txt", "content": "x", "append": "maybe"},
+            context,
+        )
+    )
+    assert result.ok is False
+    assert "boolean" in (result.error or "").lower()
+
+
+def test_grounding_validation_accepts_element_for_mouse_tools(settings, registry):
+    click = registry.get("mouse_double_click")
+    assert click.validate_arguments({"element": "Notes"}, allow_grounding=True) == {}
+    assert click.validate_arguments({"x": 1, "y": 2}) == {"x": 1, "y": 2}
+
+    drag = registry.get("mouse_drag")
+    assert drag.validate_arguments(
+        {"element": "Notes", "to_x": 10, "to_y": 20}, allow_grounding=True
+    ) == {"to_x": 10, "to_y": 20}
+
+    with pytest.raises(ToolArgumentError):
+        registry.get("keyboard_type").validate_arguments(
+            {"element": "Notes", "text": "x"}, allow_grounding=True
+        )
+
+
+def test_grounding_tools_advertise_element_instead_of_required_coordinates(settings, registry):
+    parameters = registry.get("mouse_double_click").schema()["function"]["parameters"]
+    assert "element" in parameters["properties"]
+    assert "x" not in parameters["required"]
+    assert "y" not in parameters["required"]
+
+    drag = registry.get("mouse_drag").schema()["function"]["parameters"]
+    assert "from_x" not in drag["required"]
+    assert "from_y" not in drag["required"]
+    assert "to_x" in drag["required"]
+
+
+def test_append_respects_the_total_file_size_limit(settings, registry):
+    limited = settings.model_copy(update={"max_file_bytes": 10})
+    context = ToolContext(settings=limited, desktop=SimulatedDesktop())
+    first = run(registry.execute("fs_write", {"path": "limit.txt", "content": "123456"}, context))
+    assert first.ok, first.error
+
+    second = run(
+        registry.execute(
+            "fs_write",
+            {"path": "limit.txt", "content": "abcdef", "append": True},
+            context,
+        )
+    )
+    assert second.ok is False
+    assert "limit" in (second.error or "").lower()
+    assert (settings.workspace_dir / "limit.txt").read_text(encoding="utf-8") == "123456"

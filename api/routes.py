@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,10 +73,17 @@ def utcnow() -> str:
 class TaskRecord:
     """In-memory view of a task; the durable copy lives in SQLite."""
 
-    def __init__(self, task_id: str, goal: str, max_steps: int | None = None) -> None:
+    def __init__(
+        self,
+        task_id: str,
+        goal: str,
+        max_steps: int | None = None,
+        confirmed: bool = False,
+    ) -> None:
         self.task_id = task_id
         self.goal = goal
         self.max_steps = max_steps
+        self.confirmed = confirmed
         self.status = "queued"
         self.created_at = utcnow()
         self.started_at: str | None = None
@@ -141,10 +149,15 @@ class TaskManager:
         self._closed = False
 
     # ------------------------------------------------------------- lifecycle
-    def submit(self, goal: str, max_steps: int | None = None) -> TaskRecord:
+    def submit(
+        self,
+        goal: str,
+        max_steps: int | None = None,
+        confirmed: bool = False,
+    ) -> TaskRecord:
         self._prune()
         task_id = uuid.uuid4().hex[:12]
-        record = TaskRecord(task_id, goal, max_steps=max_steps)
+        record = TaskRecord(task_id, goal, max_steps=max_steps, confirmed=confirmed)
         self.tasks[task_id] = record
         job = asyncio.create_task(self._execute(record), name=f"visionpilot-{task_id}")
         self._jobs[task_id] = job
@@ -170,6 +183,7 @@ class TaskManager:
                 await self._publish_status(record)
                 agent = VisionPilotAgent(
                     self.settings,
+                    registry=self.registry,
                     database=self.database,
                     event_callback=lambda event: self._on_event(record, event),
                 )
@@ -180,6 +194,7 @@ class TaskManager:
                         record.goal,
                         task_id=record.task_id,
                         max_steps=record.max_steps,
+                        confirmed=record.confirmed,
                     )
                 finally:
                     await agent.aclose()
@@ -281,6 +296,12 @@ class TaskManager:
             except Exception:  # noqa: BLE001
                 logger.debug("error closing agent", exc_info=True)
         self._agents.clear()
+        manager = getattr(self.registry, "browser_manager", None)
+        if manager is not None and getattr(manager, "started", False):
+            try:
+                await manager.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("error closing browser", exc_info=True)
         for websocket in list(self._subscribers):
             try:
                 await websocket.close()
@@ -341,7 +362,11 @@ async def list_tasks(request: Request, limit: int = 30) -> list[TaskSummary]:
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=201)
 async def create_task(payload: TaskCreateRequest, request: Request) -> TaskCreatedResponse:
     manager = get_manager(request)
-    record = manager.submit(payload.goal.strip(), max_steps=payload.max_steps)
+    record = manager.submit(
+        payload.goal.strip(),
+        max_steps=payload.max_steps,
+        confirmed=payload.confirmed,
+    )
     return TaskCreatedResponse(
         task_id=record.task_id,
         status=record.status,
@@ -400,7 +425,7 @@ async def tools(request: Request) -> ToolsResponse:
                 danger=tool.danger,
                 category=tool.category,
                 available=tool.is_available(),
-                unavailable_reason=tool.unavailable_reason(),
+                unavailable_reason=None if tool.is_available() else tool.unavailable_reason(),
                 parameters=[parameter.model_dump() for parameter in tool.parameters],
             )
         )
@@ -463,6 +488,52 @@ async def run_demo(payload: DemoRequest, request: Request) -> DemoResponse:
     return DemoResponse(scenario=payload.scenario, goal=goal, task_id=record.task_id)
 
 
+# ---------------------------------------------------------- websocket origins
+_LOOPBACK_HOSTNAMES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _origin_key(value: str) -> tuple[str, str, int] | None:
+    """Normalize an origin so default ports and case never cause a mismatch."""
+    try:
+        parsed = urlsplit(str(value).strip())
+        scheme = parsed.scheme.casefold()
+        host = (parsed.hostname or "").casefold()
+        port = parsed.port
+    except ValueError:
+        return None
+    if not scheme or not host:
+        return None
+    if port is None:
+        port = {"http": 80, "https": 443}.get(scheme)
+    if port is None:
+        return None
+    return scheme, host, port
+
+
+def _ws_origin_allowed(
+    origin: str,
+    host_header: str,
+    scheme: str,
+    allowed: set[tuple[str, str, int]],
+    allow_any: bool,
+) -> bool:
+    if allow_any:
+        return True
+    key = _origin_key(origin)
+    if key is None:
+        return False
+    if key in allowed:
+        return True
+    # The bundled console connects to its own host.  `fastapi dev` serves it
+    # on port 8000 (or any --port), which is not necessarily in cors_origins.
+    # Allow exactly that same origin when the host is loopback; otherwise a
+    # page on any other site could reach the local event stream.
+    expected = _origin_key(f"{'https' if scheme == 'wss' else 'http'}://{host_header}")
+    if expected is None or expected[1] not in _LOOPBACK_HOSTNAMES:
+        return False
+    return key == expected
+
+
 # ------------------------------------------------------------------ factory
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the FastAPI application.
@@ -497,7 +568,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=resolved.cors_origins or ["*"],
+        # An empty list means no cross-origin access.  Never fall back to "*":
+        # this API is unauthenticated and accepts the confirmed flag.
+        allow_origins=resolved.cors_origins,
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -514,8 +587,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="frontend is missing")
         return FileResponse(target)
 
+    # CORSMiddleware ignores non-HTTP scopes, so the WebSocket endpoint needs
+    # its own Origin check: otherwise any web page can open ws://127.0.0.1 and
+    # receive every task event (goals, observations, tool output).
+    allowed_ws_origins = {
+        key for key in (_origin_key(origin) for origin in resolved.cors_origins) if key
+    }
+    allow_any_ws_origin = "*" in {origin.strip() for origin in resolved.cors_origins}
+    if allow_any_ws_origin:
+        logger.warning(
+            "VISIONPILOT_CORS_ORIGINS contains '*': WebSocket origin checks are disabled"
+        )
+
     @app.websocket("/ws/events")
     async def ws_events(websocket: WebSocket, task_id: str | None = None) -> None:
+        origin = websocket.headers.get("origin")
+        if origin is not None and not _ws_origin_allowed(
+            origin,
+            websocket.headers.get("host", ""),
+            websocket.url.scheme,
+            allowed_ws_origins,
+            allow_any_ws_origin,
+        ):
+            logger.warning("rejected WebSocket connection from origin %s", origin)
+            await websocket.close(code=1008)
+            return
         manager: TaskManager = websocket.app.state.manager
         await manager.register(websocket)
         try:

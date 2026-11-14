@@ -106,16 +106,38 @@ async def _type_text(context: ToolContext, text: str, interval: float | None = N
             ok=False,
             error="no live input backend is available; install pyautogui or use simulate mode",
         )
+
+    writer = gui
+    if not text.isascii() and not type(gui).__module__.startswith("executor.native_input"):
+        # PyAutoGUI's write() silently drops non-ASCII characters. Use the
+        # Windows SendInput backend, which types Unicode explicitly.
+        from executor.native_input import load_native_gui
+
+        writer = load_native_gui()
+        if writer is None:
+            return ToolResult(
+                tool="keyboard_type",
+                ok=False,
+                error=(
+                    "non-ASCII text requires the Windows SendInput backend; "
+                    "install pyautogui on Windows or type ASCII text"
+                ),
+            )
+
     interval = float(interval if interval is not None else 0.02)
     try:
-        await asyncio.to_thread(gui.write, text, interval)
+        await asyncio.to_thread(writer.write, text, interval)
     except Exception as exc:  # noqa: BLE001
         return ToolResult(tool="keyboard_type", ok=False, error=f"typing failed: {exc}")
     return ToolResult(
         tool="keyboard_type",
         ok=True,
         output=f"typed {len(text)} characters",
-        data={"text": text, "length": len(text)},
+        data={
+            "text": text,
+            "length": len(text),
+            "backend": "native" if type(writer).__module__.startswith("executor.native_input") else "pyautogui",
+        },
     )
 
 

@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from agent import Plan, PlanStep, Planner, ReasoningEngine
+from agent.core import VisionPilotAgent
 from perception import GUIState, UIElement
 
 DESKTOP_ELEMENTS = [
@@ -90,6 +91,55 @@ def test_validate_plan_flags_unknown_tool(settings, registry):
     plan = Plan(goal="test", steps=[PlanStep(description="x", tool="does_not_exist")])
     warnings = planner.validate_plan(plan)
     assert any("does_not_exist" in warning for warning in warnings)
+
+
+def test_validate_plan_accepts_element_only_mouse_steps(settings, registry):
+    planner = build_planner(settings, registry)
+    plan = Plan(
+        goal="test",
+        steps=[
+            PlanStep(description="click Notes", tool="mouse_double_click", arguments={"element": "Notes"}),
+            PlanStep(
+                description="drag from Notes",
+                tool="mouse_drag",
+                arguments={"element": "Notes", "to_x": 100, "to_y": 200},
+            ),
+        ],
+    )
+    assert planner.validate_plan(plan) == []
+
+
+def test_llm_plan_with_unknown_step_is_rejected_whole(settings, registry):
+    planner = build_planner(settings, registry)
+    payload = {
+        "steps": [
+            {"description": "ok", "tool": "mouse_click", "arguments": {"element": "Notes"}},
+            {"description": "bad", "tool": "does_not_exist", "arguments": {}},
+        ]
+    }
+    assert planner._plan_from_payload(payload, "test", source="llm") is None
+
+
+def test_ground_maps_drag_to_the_start_point(settings, registry):
+    agent = VisionPilotAgent.__new__(VisionPilotAgent)
+    agent.registry = registry
+    agent.settings = settings
+
+    args, error = agent._ground(
+        "mouse_drag",
+        {"element": "Notes", "to_x": 200, "to_y": 300},
+        make_state(),
+    )
+    assert error is None
+    assert args["to_x"] == 200 and args["to_y"] == 300
+    notes = next(element for element in DESKTOP_ELEMENTS if element.label == "Notes")
+    assert (args["from_x"], args["from_y"]) == notes.center
+
+    rejected, message = agent._ground(
+        "keyboard_type", {"element": "Notes", "text": "x"}, make_state()
+    )
+    assert rejected is None
+    assert "not supported" in (message or "")
 
 
 def test_replan_recovers_from_a_grounding_failure(settings, registry):

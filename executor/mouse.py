@@ -94,14 +94,16 @@ async def _move(context: ToolContext, x: int, y: int, duration: float | None = N
 
 async def _click(
     context: ToolContext,
-    x: int | None,
-    y: int | None,
-    button: str,
-    clicks: int,
+    x: int | None = None,
+    y: int | None = None,
+    button: str = "left",
+    clicks: int = 1,
 ) -> ToolResult:
     screen_w, screen_h = _screen_size(context)
     if x is None or y is None:
-        x, y = _position(context)
+        pointer_x, pointer_y = _position(context)
+        x = pointer_x if x is None else x
+        y = pointer_y if y is None else y
     x = _clamp(x, 0, screen_w - 1)
     y = _clamp(y, 0, screen_h - 1)
 
@@ -249,9 +251,10 @@ def build_mouse_tools() -> list[Tool]:
     return [
         FunctionTool(
             name="mouse_move",
-            description="Move the mouse pointer to absolute screen coordinates.",
+            description="Move the mouse pointer to absolute screen coordinates, or to a named element.",
             category="mouse",
             danger="caution",
+            supports_grounding=True,
             parameters=[
                 ToolParameter(name="x", type="integer", description="Screen x coordinate", required=True),
                 ToolParameter(name="y", type="integer", description="Screen y coordinate", required=True),
@@ -261,9 +264,13 @@ def build_mouse_tools() -> list[Tool]:
         ),
         FunctionTool(
             name="mouse_click",
-            description="Click at screen coordinates (defaults to the current pointer position).",
+            description=(
+                "Click at screen coordinates or on a named element. With no x/y it "
+                "clicks at the current pointer position."
+            ),
             category="mouse",
             danger="caution",
+            supports_grounding=True,
             parameters=[
                 ToolParameter(name="x", type="integer", description="Screen x coordinate"),
                 ToolParameter(name="y", type="integer", description="Screen y coordinate"),
@@ -274,9 +281,10 @@ def build_mouse_tools() -> list[Tool]:
         ),
         FunctionTool(
             name="mouse_double_click",
-            description="Double-click at screen coordinates.",
+            description="Double-click at screen coordinates or on a named element.",
             category="mouse",
             danger="caution",
+            supports_grounding=True,
             parameters=[
                 ToolParameter(name="x", type="integer", description="Screen x coordinate", required=True),
                 ToolParameter(name="y", type="integer", description="Screen y coordinate", required=True),
@@ -285,9 +293,10 @@ def build_mouse_tools() -> list[Tool]:
         ),
         FunctionTool(
             name="mouse_right_click",
-            description="Right-click at screen coordinates (opens context menus).",
+            description="Right-click at screen coordinates or on a named element (opens context menus).",
             category="mouse",
             danger="caution",
+            supports_grounding=True,
             parameters=[
                 ToolParameter(name="x", type="integer", description="Screen x coordinate", required=True),
                 ToolParameter(name="y", type="integer", description="Screen y coordinate", required=True),
@@ -296,9 +305,14 @@ def build_mouse_tools() -> list[Tool]:
         ),
         FunctionTool(
             name="mouse_drag",
-            description="Drag from one point to another holding the left button.",
+            description=(
+                "Drag from one point to another holding the left button. A named "
+                "element is used as the start point."
+            ),
             category="mouse",
             danger="caution",
+            supports_grounding=True,
+            position_params=("from_x", "from_y"),
             parameters=[
                 ToolParameter(name="from_x", type="integer", description="Start x", required=True),
                 ToolParameter(name="from_y", type="integer", description="Start y", required=True),
@@ -310,9 +324,13 @@ def build_mouse_tools() -> list[Tool]:
         ),
         FunctionTool(
             name="mouse_scroll",
-            description="Scroll the mouse wheel; positive scrolls up, negative scrolls down.",
+            description=(
+                "Scroll the mouse wheel; positive scrolls up, negative scrolls down. "
+                "An optional element centers the pointer first."
+            ),
             category="mouse",
             danger="caution",
+            supports_grounding=True,
             parameters=[
                 ToolParameter(name="clicks", type="integer", description="Wheel notches", required=True),
                 ToolParameter(name="x", type="integer", description="Optional pointer x"),

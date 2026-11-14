@@ -27,6 +27,10 @@ class HealthResponse(BaseModel):
 class TaskCreateRequest(BaseModel):
     goal: str = Field(min_length=2, max_length=2000, description="自然语言任务目标")
     max_steps: int | None = Field(default=None, ge=1, le=100, description="覆盖默认步数上限")
+    confirmed: bool = Field(
+        default=False,
+        description="显式确认允许该任务执行危险操作（删除文件、运行命令等）",
+    )
 
 
 class TaskSummary(BaseModel):

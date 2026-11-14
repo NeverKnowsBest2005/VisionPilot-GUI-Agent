@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
+from agent.core import _verification_passed
 from executor import ToolResult
 from perception import GUIState
 from verifier import Checker, RecoveryAction, RecoveryManager, TaskEvaluator, expectations_for
@@ -75,6 +77,52 @@ def test_checker_reports_tool_errors(settings):
     )
     assert result.success is False
     assert any("element not found" in reason for reason in result.reasons)
+
+
+def test_checker_trusts_non_visual_tools(settings):
+    checker = Checker(settings)
+    result = asyncio.run(
+        checker.check(
+            before=make_state("same"),
+            after=make_state("same"),
+            action={"tool": "fs_write", "arguments": {"path": "x.txt"}},
+            tool_result=ToolResult(tool="fs_write", ok=True, output="wrote x.txt"),
+        )
+    )
+    assert result.status == "success"
+    assert result.success is True
+    assert "not reliably visible" in " ".join(result.reasons)
+
+
+def test_non_visual_tool_explicit_expectation_is_not_skipped(settings):
+    checker = Checker(settings)
+    result = asyncio.run(
+        checker.check(
+            before=make_state("same"),
+            after=make_state("same"),
+            action={"tool": "fs_write", "arguments": {"path": "x.txt"}},
+            expectation={"text": "written contents"},
+            tool_result=ToolResult(tool="fs_write", ok=True, output="wrote x.txt"),
+        )
+    )
+    assert result.success is not True
+    assert result.status in {"failure", "partial"}
+    assert "written contents" in " ".join(result.reasons)
+
+
+def _outcome(status: str, success: bool | None = None):
+    return SimpleNamespace(status=status, success=success)
+
+
+def test_core_does_not_trust_non_visual_tool_over_an_explicit_expectation():
+    result = ToolResult(tool="fs_write", ok=True, output="wrote x.txt")
+    explicit = SimpleNamespace(tool="fs_write", expect={"text": "Welcome"})
+    implicit = SimpleNamespace(tool="fs_write", expect=None)
+
+    assert _verification_passed(explicit, result, _outcome("partial"), True) is False
+    assert _verification_passed(explicit, result, _outcome("unknown"), True) is False
+    assert _verification_passed(implicit, result, _outcome("partial"), True) is True
+    assert _verification_passed(implicit, result, None, True) is True
 
 
 def test_checker_partial_without_visible_change(settings):

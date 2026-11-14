@@ -41,13 +41,44 @@ logger = logging.getLogger("visionpilot.executor")
 DangerLevel = Literal["safe", "caution", "dangerous"]
 ParamType = Literal["string", "integer", "number", "boolean", "array", "object"]
 
+GROUNDING_KEYS = ("element", "label", "target")
+"""Symbolic element labels accepted by position-based tools."""
+
 _PY_AUTOGUI: Any = None
 _PY_AUTOGUI_PROBED = False
+_DPI_ENABLED = False
 
 
 # ---------------------------------------------------------------------------
 # Optional backend access
 # ---------------------------------------------------------------------------
+def enable_dpi_awareness() -> None:
+    """Make the process DPI-aware so capture and input agree on pixel units.
+
+    Without this, a process running under Windows display scaling can capture
+    logical pixels while ``SendInput``/``GetSystemMetrics`` use physical ones,
+    which shifts every grounded click.
+    """
+    global _DPI_ENABLED
+    if _DPI_ENABLED or os.name != "nt":
+        return
+    _DPI_ENABLED = True
+    try:  # pragma: no cover - Windows-only
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor aware
+            return
+        except Exception:  # noqa: BLE001 - unavailable before Windows 8.1
+            pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def load_pyautogui() -> Any | None:
     """Load the live input backend.
 
@@ -55,6 +86,7 @@ def load_pyautogui() -> Any | None:
     built-in ``SendInput`` backend, which also supports Unicode typing.
     """
     global _PY_AUTOGUI, _PY_AUTOGUI_PROBED
+    enable_dpi_awareness()
     if not _PY_AUTOGUI_PROBED:
         _PY_AUTOGUI_PROBED = True
         try:  # pragma: no cover - depends on the host desktop
@@ -80,6 +112,7 @@ def load_pyautogui() -> Any | None:
 
 def get_screen_size() -> tuple[int, int]:
     """Best-effort physical screen size, with a headless-safe default."""
+    enable_dpi_awareness()
     gui = load_pyautogui()
     if gui is not None:
         try:
@@ -150,7 +183,7 @@ class ToolResult:
             "denied": self.denied,
         }
 
-    def to_observation(self, max_chars: int = 800) -> str:
+    def to_observation(self, max_chars: int = 2000) -> str:
         """Compact string form fed back to the model."""
         if self.ok:
             text = self.output or "ok"
@@ -209,6 +242,11 @@ class Tool(abc.ABC):
     parameters: Sequence[ToolParameter] = ()
     danger: DangerLevel = "safe"
     category: str = "general"
+    supports_grounding: bool = False
+    """Accept a symbolic ``element`` label instead of explicit coordinates."""
+
+    position_params: tuple[str, ...] = ("x", "y")
+    """Coordinate parameters filled from a grounded element center."""
 
     # ------------------------------------------------------------------ meta
     def is_available(self) -> bool:
@@ -220,7 +258,20 @@ class Tool(abc.ABC):
 
     def schema(self) -> dict[str, Any]:
         properties = {param.name: param.schema_fragment() for param in self.parameters}
-        required = [param.name for param in self.parameters if param.required]
+        if self.supports_grounding:
+            properties["element"] = {
+                "type": "string",
+                "description": (
+                    "Visible UI element label (for example the text on a button). "
+                    "Resolved to screen coordinates automatically; preferred over x/y."
+                ),
+            }
+        required = [
+            param.name
+            for param in self.parameters
+            if param.required
+            and not (self.supports_grounding and param.name in self.position_params)
+        ]
         return {
             "type": "function",
             "function": {
@@ -255,21 +306,48 @@ class Tool(abc.ABC):
         return f"{self.name}({args}) - {self.description}"
 
     # ------------------------------------------------------------ validation
-    def validate_arguments(self, arguments: dict[str, Any] | None) -> dict[str, Any]:
+    def validate_arguments(
+        self,
+        arguments: dict[str, Any] | None,
+        *,
+        allow_grounding: bool = False,
+    ) -> dict[str, Any]:
+        """Validate and coerce arguments, optionally accepting an element label.
+
+        Grounding keys are stripped from the returned mapping; the agent's
+        ``_ground`` step turns them into coordinates before execution.  A
+        label also satisfies the required coordinate parameters, so an LLM plan
+        such as ``{"element": "Notes"}`` for ``mouse_double_click`` is valid.
+        """
         arguments = dict(arguments or {})
         definitions = {param.name: param for param in self.parameters}
+        grounding = bool(allow_grounding and self.supports_grounding)
+        allowed = set(definitions) | (set(GROUNDING_KEYS) if grounding else set())
 
-        unknown = set(arguments) - set(definitions)
+        unknown = set(arguments) - allowed
         if unknown:
             raise ToolArgumentError(
                 f"unknown argument(s) for {self.name}: {', '.join(sorted(unknown))}"
             )
+
+        label_key: str | None = None
+        if grounding:
+            for key in GROUNDING_KEYS:
+                if key not in arguments:
+                    continue
+                value = arguments[key]
+                if not isinstance(value, str) or not value.strip():
+                    raise ToolArgumentError(f"argument '{key}' must be a non-empty string")
+                if label_key is None:
+                    label_key = key
 
         cleaned: dict[str, Any] = {}
         for param in self.parameters:
             if param.name in arguments and arguments[param.name] is not None:
                 cleaned[param.name] = self._coerce(param, arguments[param.name])
             elif param.required:
+                if label_key is not None and param.name in self.position_params:
+                    continue
                 raise ToolArgumentError(f"missing required argument '{param.name}'")
             elif param.default is not None:
                 cleaned[param.name] = param.default
@@ -287,7 +365,13 @@ class Tool(abc.ABC):
                 coerced = float(value)
             elif param.type == "boolean":
                 if isinstance(value, str):
-                    coerced = value.strip().lower() in {"1", "true", "yes", "on"}
+                    text = value.strip().lower()
+                    if text in {"1", "true", "yes", "on"}:
+                        coerced = True
+                    elif text in {"0", "false", "no", "off"}:
+                        coerced = False
+                    else:
+                        raise ValueError
                 elif isinstance(value, bool):
                     coerced = value
                 else:
@@ -358,12 +442,16 @@ class FunctionTool(Tool):
         category: str = "general",
         available: Callable[[], bool] | None = None,
         unavailable_reason: str = "tool backend is not available",
+        supports_grounding: bool = False,
+        position_params: tuple[str, ...] = ("x", "y"),
     ) -> None:
         self.name = name
         self.description = description
         self.parameters = tuple(parameters)
         self.danger = danger
         self.category = category
+        self.supports_grounding = supports_grounding
+        self.position_params = tuple(position_params)
         self._handler = handler
         self._available = available or (lambda: True)
         self._unavailable_reason = unavailable_reason
@@ -382,8 +470,9 @@ class FunctionTool(Tool):
         if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
             result = await result
         if isinstance(result, ToolResult):
-            if not result.tool:
-                result.tool = self.name
+            # Handlers are sometimes shared (e.g. left/right click); the tool
+            # that was actually invoked owns the result.
+            result.tool = self.name
             return result
         if isinstance(result, dict):
             return self._result(

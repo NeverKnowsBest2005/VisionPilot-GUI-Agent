@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from executor.base import (
+    GROUNDING_KEYS,
     FunctionTool,
     Tool,
     ToolArgumentError,
@@ -13,6 +14,7 @@ from executor.base import (
     ToolPermissionError,
     ToolRegistry,
     ToolResult,
+    enable_dpi_awareness,
     get_screen_size,
     load_pyautogui,
 )
@@ -40,7 +42,7 @@ def build_default_registry(settings: Any = None) -> ToolRegistry:
     tools.extend(build_mouse_tools())
     tools.extend(build_keyboard_tools())
     tools.extend(build_filesystem_tools())
-    tools.extend(build_system_tools())
+    tools.extend(build_system_tools(settings))
     manager = BrowserManager(headless=getattr(settings, "browser_headless", True))
     tools.extend(build_browser_tools(manager))
 
@@ -51,6 +53,7 @@ def build_default_registry(settings: Any = None) -> ToolRegistry:
 
 
 __all__ = [
+    "GROUNDING_KEYS",
     "FunctionTool",
     "Tool",
     "ToolArgumentError",
@@ -60,6 +63,7 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "build_default_registry",
+    "enable_dpi_awareness",
     "get_screen_size",
     "load_pyautogui",
 ]

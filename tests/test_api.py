@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from api.routes import create_app
+from api.routes import TaskManager, create_app
 
 
 def test_health_and_index(settings):
@@ -66,6 +70,10 @@ def test_tools_skills_and_demo_endpoints(settings):
         assert {"mouse_click", "keyboard_type", "fs_read"} <= names
         assert tools["count"] == len(names)
 
+        command = next(tool for tool in tools["tools"] if tool["name"] == "system_run_command")
+        assert command["available"] is False
+        assert command["unavailable_reason"]
+
         skills = client.get("/api/skills")
         assert skills.status_code == 200
 
@@ -77,6 +85,23 @@ def test_tools_skills_and_demo_endpoints(settings):
         assert missing.status_code == 400
 
 
+def test_cors_does_not_trust_arbitrary_origins(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        headers = {
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        }
+        blocked = client.options("/api/tasks", headers={"Origin": "https://evil.example", **headers})
+        assert "access-control-allow-origin" not in blocked.headers
+
+        allowed = client.options(
+            "/api/tasks",
+            headers={"Origin": "http://localhost:5173", **headers},
+        )
+        assert allowed.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
 def test_websocket_streams_task_events(settings):
     app = create_app(settings)
     with TestClient(app) as client:
@@ -84,3 +109,115 @@ def test_websocket_streams_task_events(settings):
             hello = websocket.receive_json()
             assert hello["type"] == "hello"
             assert hello["execution_mode"] == "simulate"
+
+
+def test_websocket_rejects_foreign_origins(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(
+                "/ws/events", headers={"origin": "https://evil.example"}
+            ) as websocket:
+                websocket.receive_json()
+
+        with client.websocket_connect(
+            "/ws/events", headers={"origin": "http://localhost:5173"}
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "hello"
+
+
+def test_websocket_allows_the_loopback_serving_origin(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "ws://127.0.0.1:8000/ws/events",
+            headers={"origin": "http://127.0.0.1:8000"},
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "hello"
+
+        # A non-loopback origin is still rejected even when it is the only
+        # origin the test client could claim to be same-site with.
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(
+                "ws://127.0.0.1:8000/ws/events",
+                headers={"origin": "https://evil.example"},
+            ) as websocket:
+                websocket.receive_json()
+
+
+def test_websocket_honours_default_port_equivalence(settings):
+    configured = settings.model_copy(
+        update={
+            "cors_origins": [
+                "http://localhost:80",
+                "https://app.example.com:443",
+            ]
+        }
+    )
+    app = create_app(configured)
+    with TestClient(app) as client:
+        for origin in ("http://localhost", "https://app.example.com"):
+            with client.websocket_connect(
+                "/ws/events", headers={"origin": origin}
+            ) as websocket:
+                assert websocket.receive_json()["type"] == "hello"
+
+
+def test_wildcard_cors_configuration_allows_websocket_origins(settings):
+    wildcard = settings.model_copy(update={"cors_origins": ["*"]})
+    app = create_app(wildcard)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/ws/events", headers={"origin": "https://any.example"}
+        ) as websocket:
+            assert websocket.receive_json()["type"] == "hello"
+
+
+class _FakeAgent:
+    seen: dict[str, object] = {}
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def run(self, goal: str, **kwargs):
+        type(self).seen = {"goal": goal, **kwargs}
+        return SimpleNamespace(status="completed", success=True, steps=[], error=None)
+
+    async def aclose(self) -> None:
+        pass
+
+
+def test_confirmed_flag_is_passed_to_the_agent(settings, monkeypatch):
+    monkeypatch.setattr("api.routes.VisionPilotAgent", _FakeAgent)
+
+    async def scenario():
+        manager = TaskManager(settings)
+        try:
+            record = manager.submit("delete a file", confirmed=True)
+            await manager._jobs[record.task_id]
+            return record
+        finally:
+            await manager.shutdown()
+
+    record = asyncio.run(scenario())
+
+    assert _FakeAgent.seen["confirmed"] is True
+    assert _FakeAgent.seen["goal"] == "delete a file"
+    assert record.status == "completed"
+
+
+def test_confirmation_defaults_to_false(settings, monkeypatch):
+    monkeypatch.setattr("api.routes.VisionPilotAgent", _FakeAgent)
+
+    async def scenario():
+        manager = TaskManager(settings)
+        try:
+            record = manager.submit("open Notes")
+            await manager._jobs[record.task_id]
+            return record
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(scenario())
+
+    assert _FakeAgent.seen["confirmed"] is False

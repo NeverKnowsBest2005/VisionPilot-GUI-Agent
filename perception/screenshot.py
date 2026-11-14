@@ -113,7 +113,7 @@ class SimulatedDesktop:
         }
         self.buffers: dict[str, str] = {"Notes": "", "File Explorer": "", "Settings": ""}
         self.status = "Ready"
-        self.scroll = 0
+        self.scroll_offset = 0
         self.clicks = 0
         self.action_log: list[str] = []
         self.last_input: str = ""
@@ -249,9 +249,23 @@ class SimulatedDesktop:
     def _open(self, app: str) -> str:
         self.active_app = app
         self.status = f"Opened {app}"
-        self.scroll = 0
+        self.scroll_offset = 0
         self._log(f"open {app}")
         return f"opened {app} (window: {self.active_window})"
+
+    def open_app(self, app: str) -> str:
+        """Simulate launching an installed app (used by system_launch_app)."""
+        name = str(app or "").strip()
+        if not name:
+            raise ValueError("application name is required")
+        for known in list(self.apps):
+            if known.casefold() == name.casefold():
+                name = known
+                break
+        else:
+            self.apps.append(name)
+        self.buffers.setdefault(name, "")
+        return self._open(name)
 
     def click(self, x: int, y: int, button: str = "left", clicks: int = 1) -> str:
         self.position = (x, y)
@@ -288,8 +302,11 @@ class SimulatedDesktop:
         return f"dragged from ({from_x}, {from_y}) to ({to_x}, {to_y})"
 
     def scroll(self, clicks: int, x: int | None = None, y: int | None = None) -> str:
-        self.scroll = max(0, self.scroll - clicks)
-        return f"scrolled {clicks} (offset {self.scroll})"
+        self.scroll_offset = max(0, self.scroll_offset - clicks)
+        if x is not None and y is not None:
+            self.position = (x, y)
+        self.status = f"Scrolled {clicks}"
+        return f"scrolled {clicks} (offset {self.scroll_offset})"
 
     def type_text(self, text: str) -> str:
         if self.active_app == "Desktop":
@@ -444,7 +461,9 @@ def _capture_mss() -> Any:
     from PIL import Image as PILImage
 
     with mss.mss() as sct:
-        monitor = sct.monitors[0]
+        # Index 0 is the union of every monitor; input coordinates are relative
+        # to the primary monitor, so capture that one to keep both in sync.
+        monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
         shot = sct.grab(monitor)
         return PILImage.frombytes("RGB", shot.size, shot.rgb)
 
@@ -452,7 +471,7 @@ def _capture_mss() -> Any:
 def _capture_pillow() -> Any:
     from PIL import ImageGrab
 
-    return ImageGrab.grab(all_screens=True)
+    return ImageGrab.grab(all_screens=False)
 
 
 def _capture_pyautogui() -> Any:
@@ -504,6 +523,9 @@ class ScreenCapture:
 
     # ------------------------------------------------------------- capture
     def capture(self, *, save: bool = True) -> Screenshot:
+        from executor.base import enable_dpi_awareness
+
+        enable_dpi_awareness()
         started = time.perf_counter()
         image = None
         backend = self.backend

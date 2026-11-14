@@ -184,8 +184,10 @@ class ReasoningEngine:
             "- To open an installed desktop application by name (e.g. 微信, WeChat, 设置), "
             "call system_launch_app with {\"name\": \"<app name>\"} instead of Start-menu keystrokes; "
             "set expect to {\"window\": \"<app name>\"}.\n"
-            "- To click/type into a visible element, pass its label as argument \"element\" "
-            "(do not guess coordinates unless you must).\n"
+            "- To interact with a visible element, pass its label as argument \"element\" "
+            "to a mouse tool (mouse_move/mouse_click/mouse_double_click/mouse_right_click/"
+            "mouse_drag/mouse_scroll); do not guess coordinates unless you must. To type into "
+            "a field, first click it, then call keyboard_type with \"text\".\n"
             "- keyboard_type takes \"text\"; keyboard_press takes \"keys\" (list, e.g. [\"ctrl\",\"s\"]).\n"
             "- For a window-opening step set expect to {\"window\": \"<title fragment>\"}.\n"
             "- For typing set expect to {\"text\": \"<the typed text>\"}.\n"
@@ -220,8 +222,9 @@ class ReasoningEngine:
             f"RECENT ACTIONS:\n{history or '(none)'}\n"
             f"{('LAST ERROR: ' + last_error + chr(10)) if last_error else ''}\n"
             f"AVAILABLE TOOLS:\n{tool_catalog}\n\n"
-            "Choose ONE concrete tool call that advances the goal. Prefer \"element\" labels over "
-            "guessed coordinates. Say what the screen should look like afterwards.\n"
+            "Choose ONE concrete tool call that advances the goal. For mouse tools prefer "
+            "\"element\" labels over guessed coordinates. Say what the screen should look like "
+            "afterwards.\n"
             'Return JSON: {"reasoning": "...", "tool": "...", "arguments": {...}, "expect": {...}}'
         )
         try:

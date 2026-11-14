@@ -14,7 +14,7 @@ from agent.planner import Planner
 from agent.reasoning import LLMClient, ReasoningEngine
 from agent.state import AgentState, Phase, Plan, PlanStep, TaskResult
 from config.settings import Settings
-from executor import ToolContext, ToolResult, build_default_registry
+from executor import GROUNDING_KEYS, ToolContext, ToolResult, build_default_registry, get_screen_size
 from learning.optimizer import PerformanceOptimizer
 from learning.skill_manager import SkillManager
 from learning.trajectory import build_trajectory, extract_lessons, summarize
@@ -30,13 +30,21 @@ logger = logging.getLogger("visionpilot.agent")
 
 EventCallback = Callable[[dict[str, Any]], Any]
 
-_MOUSE_TOOLS = {
-    "mouse_move",
-    "mouse_click",
-    "mouse_double_click",
-    "mouse_right_click",
-    "mouse_drag",
-    "mouse_scroll",
+# Tools whose effect is not reliably visible in a desktop screenshot. When the
+# tool reports success but visual verification is inconclusive, the structured
+# result is more trustworthy than "the screen looks identical".
+_TRUST_ON_INCONCLUSIVE = {
+    "fs_write",
+    "fs_move",
+    "fs_copy",
+    "fs_delete",
+    "fs_mkdir",
+    "system_run_command",
+    "system_info",
+    "system_wait",
+    "browser_get_text",
+    "browser_screenshot",
+    "browser_close",
 }
 
 
@@ -46,6 +54,35 @@ class TaskAborted(Exception):
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _verification_passed(
+    step: Any,
+    result: ToolResult,
+    outcome: Any,
+    verification_enabled: bool,
+) -> bool:
+    """Decide whether a step passed, independently of the tool's own claim.
+
+    Non-visual tools are trusted when the checker cannot see their effect, but
+    only when the step carried no explicit expectation.  An explicit
+    ``expect`` is a contract the checker must confirm.
+    """
+    if not verification_enabled:
+        return bool(result.ok)
+    passed = bool(outcome is not None and outcome.success)
+    if (
+        not passed
+        and result.ok
+        and not step.expect
+        and step.tool in _TRUST_ON_INCONCLUSIVE
+        and (outcome is None or outcome.status in {"partial", "unknown"})
+    ):
+        # The tool reported success but a desktop screenshot cannot show the
+        # effect (files, shell, browser text). Do not retry a mutating
+        # operation just because the screen did not change.
+        return True
+    return passed
 
 
 class VisionPilotAgent:
@@ -69,6 +106,7 @@ class VisionPilotAgent:
         self.llm = llm if llm is not None else LLMClient(self.settings)
         judge_llm = self.llm if self.llm.available else None
         self.reasoning = ReasoningEngine(self.settings, self.llm)
+        self._owns_registry = registry is None
         self.registry = registry if registry is not None else build_default_registry(self.settings)
         self.perception = perception or PerceptionPipeline(self.settings, llm=judge_llm)
 
@@ -104,7 +142,9 @@ class VisionPilotAgent:
 
     async def aclose(self) -> None:
         manager = getattr(self.registry, "browser_manager", None)
-        if manager is not None and getattr(manager, "started", False):
+        # A shared registry (API TaskManager) owns the browser; closing it here
+        # would break the next task.
+        if self._owns_registry and manager is not None and getattr(manager, "started", False):
             try:
                 await manager.close()
             except Exception:  # noqa: BLE001
@@ -121,6 +161,7 @@ class VisionPilotAgent:
         *,
         task_id: str | None = None,
         max_steps: int | None = None,
+        confirmed: bool = False,
     ) -> TaskResult:
         """Run one goal to completion and return the full task result."""
         goal = (goal or "").strip()
@@ -174,7 +215,7 @@ class VisionPilotAgent:
 
             if plan.steps:
                 finished, status, error = await self._run_plan(
-                    state, working, plan, deadline, max_steps=max_steps
+                    state, working, plan, deadline, max_steps=max_steps, confirmed=confirmed
                 )
             else:
                 finished = True
@@ -286,12 +327,14 @@ class VisionPilotAgent:
         deadline: float,
         *,
         max_steps: int | None = None,
+        confirmed: bool = False,
     ) -> tuple[bool, str, str | None]:
         settings = self.settings
         before = state.current_state
         context = ToolContext(
             settings=settings,
             desktop=self.perception.desktop,
+            confirmed=confirmed,
             metadata={"task_id": state.task_id},
         )
         failures: dict[int, int] = {}
@@ -353,9 +396,9 @@ class VisionPilotAgent:
                     expectation=step.expect,
                     tool_result=result,
                 )
-                passed = bool(outcome is not None and outcome.success)
-            else:
-                passed = bool(result.ok)
+            passed = _verification_passed(
+                step, result, outcome, settings.enable_verification
+            )
 
             verification = outcome.as_dict() if outcome is not None else {}
             working.record_step(
@@ -501,26 +544,57 @@ class VisionPilotAgent:
     def _ground(
         self, tool: str, arguments: dict[str, Any], gui_state: GUIState | None
     ) -> tuple[dict[str, Any] | None, str | None]:
-        """Resolve a symbolic ``element`` argument into screen coordinates."""
+        """Resolve a symbolic element label into screen coordinates.
+
+        The tool declaration decides which parameters receive the center
+        (``x``/``y`` for most mouse tools, ``from_x``/``from_y`` for drag).
+        """
         args = dict(arguments or {})
         label: str | None = None
-        for key in ("element", "label", "target"):
-            value = args.get(key)
-            if isinstance(value, str) and value.strip():
+        label_key: str | None = None
+        for key in GROUNDING_KEYS:
+            if key not in args:
+                continue
+            value = args.pop(key)
+            if not isinstance(value, str) or not value.strip():
+                return None, f"argument '{key}' must be a non-empty string"
+            if label is None:
                 label = value.strip()
-                args.pop(key, None)
-                break
+                label_key = key
         if label is None:
             return args, None
-        if tool not in _MOUSE_TOOLS:
-            return None, f"argument 'element' is not supported by tool '{tool}'"
+
+        spec = self.registry.get(tool)
+        if spec is None:
+            return None, f"unknown tool '{tool}'"
+        if not getattr(spec, "supports_grounding", False):
+            return None, f"argument '{label_key}' is not supported by tool '{tool}'"
+
         elements = getattr(gui_state, "elements", []) or []
         element = find_element(elements, label)
         if element is None:
             return None, f"element '{label}' not found on screen"
         x, y = element.center
-        args["x"], args["y"] = int(round(x)), int(round(y))
-        logger.debug("grounded %r to (%d, %d) for %s", label, args["x"], args["y"], tool)
+
+        # The screenshot and the input backend should use the same pixel
+        # space (DPI awareness is enabled for the process). If they still
+        # disagree, scale the grounded point into input coordinates.
+        if not self.settings.dry_run and gui_state is not None:
+            screen_w, screen_h = get_screen_size()
+            source_w = int(getattr(gui_state, "width", 0) or 0)
+            source_h = int(getattr(gui_state, "height", 0) or 0)
+            if source_w and source_h and (source_w, source_h) != (screen_w, screen_h):
+                x = x * screen_w / source_w
+                y = y * screen_h / source_h
+
+        for name in getattr(spec, "position_params", ("x", "y")):
+            args[name] = int(round(x if name.endswith("x") else y))
+        logger.debug(
+            "grounded %r to %s for %s",
+            label,
+            {name: args[name] for name in getattr(spec, "position_params", ("x", "y"))},
+            tool,
+        )
         return args, None
 
     @staticmethod

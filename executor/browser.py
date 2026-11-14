@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,24 @@ logger = logging.getLogger("visionpilot.executor.browser")
 _DEFAULT_TIMEOUT_MS = 15_000
 _ALLOWED_URL_PREFIXES = ("http://", "https://")
 _BLOCKED_URL_SCHEMES = ("file:", "javascript:", "data:", "vbscript:", "ftp:", "mailto:")
+
+
+def _describe(exc: BaseException) -> str:
+    """Readable one-line reason for a Playwright failure.
+
+    Playwright raises ``Error`` subclasses whose ``str()`` is sometimes empty
+    (notably when the driver process cannot be started), which used to surface
+    as ``browser open failed: `` with no detail at all.
+    """
+    message = str(exc).strip()
+    if message:
+        return message
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        message = str(cause).strip()
+        if message:
+            return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
 
 
 def normalise_url(url: str) -> str:
@@ -53,6 +73,55 @@ def normalise_url(url: str) -> str:
             f"unsupported URL scheme in {text!r}; only http://, https:// and about:blank are allowed"
         )
     return "https://" + text.lstrip("/")
+
+
+def ensure_writable_temp_dir() -> Path:
+    """Return a temp directory usable by Playwright's Node driver.
+
+    Playwright creates its artifacts directory with ``fs.mkdtemp`` inside the
+    Node driver, which inherits ``TEMP``/``TMP`` from this process.  Some
+    Windows hosts deny ``python.exe``/``node.exe`` write access to
+    ``%LOCALAPPDATA%\\Temp`` even though the interactive shell can write there;
+    the driver then fails with ``EPERM: operation not permitted, mkdtemp``.
+    (Python's own ``tempfile`` silently falls back to the *current working
+    directory* in that case, which is why stray ``tmp*`` folders can appear in
+    the project root.)
+
+    The first writable location among ``TEMP``/``TMP``/``TMPDIR`` is kept as
+    is.  When none is writable, ``logs/tmp`` under the project is used and the
+    environment is updated so the driver sees it too.
+    """
+    candidates = [
+        value
+        for value in (
+            os.environ.get("TEMP"),
+            os.environ.get("TMP"),
+            os.environ.get("TMPDIR"),
+        )
+        if value
+    ]
+    seen: set[Path] = set()
+    for value in candidates:
+        directory = Path(value)
+        if directory in seen:
+            continue
+        seen.add(directory)
+        try:
+            probe = directory / f".vp-temp-probe-{os.getpid()}"
+            probe.touch()
+            probe.unlink()
+            return directory
+        except OSError:
+            continue
+
+    fallback = Path(__file__).resolve().parent.parent / "logs" / "tmp"
+    fallback.mkdir(parents=True, exist_ok=True)
+    for variable in ("TEMP", "TMP", "TMPDIR"):
+        os.environ[variable] = str(fallback)
+    # ``gettempdir()`` caches its answer; reset the cache as well.
+    tempfile.tempdir = str(fallback)
+    logger.info("system temp directory is not writable; using %s", fallback)
+    return fallback
 
 
 def playwright_available() -> bool:
@@ -90,6 +159,10 @@ class BrowserManager:
             self._loop = loop
         if self._page is not None:
             return self._page
+
+        # The Node driver spawns below and inherits TEMP; make sure it can
+        # actually create its artifacts directory.
+        ensure_writable_temp_dir()
 
         from playwright.async_api import async_playwright
 
@@ -135,7 +208,7 @@ async def _open(context: ToolContext, manager: BrowserManager, url: str) -> Tool
         await page.wait_for_timeout(250)
         title = await page.title()
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(tool="browser_open", ok=False, error=f"browser open failed: {exc}")
+        return ToolResult(tool="browser_open", ok=False, error=f"browser open failed: {_describe(exc)}")
     status = getattr(response, "status", None)
     return ToolResult(
         tool="browser_open",
@@ -152,7 +225,7 @@ async def _click(context: ToolContext, manager: BrowserManager, selector: str) -
         await page.wait_for_timeout(250)
         title = await page.title()
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(tool="browser_click", ok=False, error=f"click failed: {exc}")
+        return ToolResult(tool="browser_click", ok=False, error=f"click failed: {_describe(exc)}")
     return ToolResult(
         tool="browser_click",
         ok=True,
@@ -166,7 +239,7 @@ async def _fill(context: ToolContext, manager: BrowserManager, selector: str, te
         page = await manager.page()
         await page.fill(selector, text, timeout=_DEFAULT_TIMEOUT_MS)
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(tool="browser_fill", ok=False, error=f"fill failed: {exc}")
+        return ToolResult(tool="browser_fill", ok=False, error=f"fill failed: {_describe(exc)}")
     return ToolResult(
         tool="browser_fill", ok=True, output=f"filled {selector}", data={"selector": selector, "text": text}
     )
@@ -178,7 +251,7 @@ async def _press(context: ToolContext, manager: BrowserManager, key: str) -> Too
         await page.keyboard.press(key)
         await page.wait_for_timeout(150)
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(tool="browser_press", ok=False, error=f"key press failed: {exc}")
+        return ToolResult(tool="browser_press", ok=False, error=f"key press failed: {_describe(exc)}")
     return ToolResult(tool="browser_press", ok=True, output=f"pressed {key}", data={"key": key})
 
 
@@ -187,7 +260,7 @@ async def _get_text(context: ToolContext, manager: BrowserManager, selector: str
         page = await manager.page()
         text = await page.inner_text(selector, timeout=_DEFAULT_TIMEOUT_MS)
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(tool="browser_get_text", ok=False, error=f"read failed: {exc}")
+        return ToolResult(tool="browser_get_text", ok=False, error=f"read failed: {_describe(exc)}")
     text = " ".join(text.split())
     snippet = text[: max(100, int(max_chars))]
     return ToolResult(
@@ -213,7 +286,7 @@ async def _screenshot(context: ToolContext, manager: BrowserManager, path: str =
         target.parent.mkdir(parents=True, exist_ok=True)
         await page.screenshot(path=str(target), full_page=False)
     except Exception as exc:  # noqa: BLE001
-        return ToolResult(tool="browser_screenshot", ok=False, error=f"screenshot failed: {exc}")
+        return ToolResult(tool="browser_screenshot", ok=False, error=f"screenshot failed: {_describe(exc)}")
     return ToolResult(
         tool="browser_screenshot",
         ok=True,

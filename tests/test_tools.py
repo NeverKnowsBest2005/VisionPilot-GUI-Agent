@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from executor import ToolArgumentError, ToolContext
+from executor.browser import playwright_available
 from perception import SimulatedDesktop
 
 
@@ -28,8 +29,9 @@ def test_registry_exposes_all_tool_groups(registry):
     }
     assert expected <= names
     assert len(registry.all()) == len(expected)
-    # Optional backends are present but marked unavailable.
-    assert registry.get("browser_open").is_available() is False
+    # Optional backends stay registered either way, but availability follows
+    # the actual backend (Playwright installed or not).
+    assert registry.get("browser_open").is_available() is playwright_available()
     assert registry.get("mouse_click").is_available() is True
 
 

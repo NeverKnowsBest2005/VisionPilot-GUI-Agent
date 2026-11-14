@@ -258,6 +258,14 @@ Remove-Item logs\screenshots\* -Recurse -Force
 
 从 0.1.1 起新增 `system_launch_app`：按应用名在 PATH、注册表 App Paths 和开始菜单快捷方式中查找并直接启动，不再依赖模拟 Win 键打开开始菜单（部分环境下注入的 Win 键会被系统忽略）。`main.py tools` 中显示为可用即表示该工具就绪。修改代码后需要重启 `fastapi dev` 才会生效。
 
+启动失败时先看返回的 `error` 与 `data`：
+
+- `found the … window (…) but Windows would not bring it to the foreground`：窗口找到了但没抢到前台。旧版本在这里只调用一次 `SetForegroundWindow`（后台进程会被系统静默忽略），于是报“已启动”而界面仍停在控制台；现在会依次尝试 `AttachThreadInput`、`SwitchToThisWindow`、最小化还原、`SetWindowPos` 置顶与点击标题栏，只有确认窗口在前台才返回成功。若仍失败，通常是目标应用以管理员权限运行而本程序不是（UIPI 隔离），请用相同权限启动两者。
+- `no visible … window appeared` / `exited before a visible window appeared`：进程起来了但没等到窗口。Electron 应用（微信、抖音、VS Code）冷启动首帧可能 3–10 秒，可把 `wait` 参数调到 10；若目标应用本身无法在当前账户下启动（例如受限账户写不了 `%APPDATA%` 下的 profile），窗口永远不会出现，这属于环境问题。商店应用（记事本、画图、计算器）走 `...\Microsoft\WindowsApps\` 别名，只能由 shell 激活，冷启动可能超过等待时间。
+- `could not find an installed application named …`：名称没命中。可以改用可执行文件名（`douyin`、`code`）或快捷方式名（`抖音`、`Visual Studio Code`）；名称匹配不区分大小写，也会忽略 “app/程序/客户端” 后缀，并用快捷方式指向的 exe 名反查。
+- `needs administrator rights (requestedExecutionLevel=…)`：目标程序的 manifest 要求提权（或在 `highestAvailable` 下 `CreateProcess` 返回 `WinError 740`）。UAC 同意框显示在安全桌面上，agent 既截不到也点不到，因此工具会**立即拒绝**这种目标而不再空等窗口（`data.needs_admin=true`），恢复策略也不会重试同一步。遇到这类程序（`mmc`、`dcomcnfg`、安装包等）请手动启动并在弹窗里点“是”，然后让任务继续做后面的步骤。
+- 名称里有空格时用引号包住，例如 `"Visual Studio Code"`。
+
 **Q：中文输出乱码？**
 
 代码与文件均为 UTF-8；旧版 Windows 控制台可能显示乱码，可执行 `chcp 65001` 或使用 Windows Terminal。网页控制台不受影响。

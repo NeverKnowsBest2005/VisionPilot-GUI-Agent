@@ -147,9 +147,18 @@ class VisionAnalyzer:
         ocr: OCRResult,
         elements: list[UIElement],
         windows: list[WindowInfo],
+        *,
+        simulated: bool = False,
     ) -> GUIState:
         active_window = ""
-        if windows:
+        if not simulated:
+            # The foreground window is the truth; EnumWindows order only catches
+            # up a moment later, which used to make the agent report the window it
+            # had just activated as still "not focused".
+            front = await asyncio.to_thread(foreground_window)
+            if front is not None and front.title:
+                active_window = front.title
+        if not active_window and windows:
             active_window = windows[0].title
         if not active_window and screenshot.meta.get("active_window"):
             active_window = str(screenshot.meta["active_window"])
@@ -321,7 +330,9 @@ class PerceptionPipeline:
         elements = await asyncio.to_thread(
             self.detector.detect, screenshot, ocr_result, desktop=self.capture.desktop
         )
-        state = await self.analyzer.analyze(screenshot, ocr_result, elements, windows)
+        state = await self.analyzer.analyze(
+            screenshot, ocr_result, elements, windows, simulated=self.capture.desktop is not None
+        )
         self.last_state = state
         self.last_ocr = ocr_result
         logger.debug(

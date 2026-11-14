@@ -83,6 +83,13 @@ class RecoveryManager:
                 f"backend unavailable: {getattr(tool_result, 'error', None) or error or 'missing dependency'}",
             )
 
+        if "needs administrator" in message or "uac consent prompt" in message:
+            # The prompt is on the secure desktop: retrying the same call can
+            # never succeed, and it would only burn the step budget.
+            return self._replan_or_abort(
+                replans_used, f"needs a manual UAC approval: {error}"
+            )
+
         if unchanged_count >= max(1, self.settings.max_consecutive_no_change):
             return RecoveryDecision(
                 RecoveryAction.REPLAN,

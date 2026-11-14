@@ -228,6 +228,8 @@ class Planner:
             )
 
         # 2. Launch an installed application that is not part of the demo desktop.
+        # No explicit ``wait``: the tool's own default (8s) is sized for Electron
+        # apps whose first screen appears seconds after the process starts.
         if wants_open and not app_target and not file_target and not folder_target and not typed_text:
             launch_target = self._extract_app_name(text)
             if launch_target and launch_target.casefold() not in active_window:
@@ -235,7 +237,7 @@ class Planner:
                     PlanStep(
                         description=f"启动应用 {launch_target}",
                         tool="system_launch_app",
-                        arguments={"name": launch_target, "wait": 2.0},
+                        arguments={"name": launch_target},
                         expect={"window": launch_target},
                     )
                 )

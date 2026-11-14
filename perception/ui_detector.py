@@ -152,9 +152,15 @@ def foreground_window() -> WindowInfo | None:
         user32.GetWindowTextW(hwnd, buffer, length + 1)
         rect = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        title = buffer.value.strip()
+        if not title:
+            return None
         return WindowInfo(
-            title=buffer.value.strip(),
+            title=title,
             bbox=(rect.left, rect.top, rect.right, rect.bottom),
+            pid=int(pid.value),
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug("foreground window failed: %s", exc)

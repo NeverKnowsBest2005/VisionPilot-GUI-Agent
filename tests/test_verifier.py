@@ -172,3 +172,17 @@ def test_recovery_retries_transient_and_replans_on_denial(settings):
 
     stuck = recovery.decide(error="nothing happened", unchanged_count=settings.max_consecutive_no_change)
     assert stuck.action == RecoveryAction.REPLAN
+
+
+def test_recovery_does_not_retry_a_uac_target(settings):
+    # Retrying cannot answer a prompt that lives on the secure desktop.
+    recovery = RecoveryManager(settings)
+
+    decision = recovery.decide(
+        error="mmc needs administrator rights: a UAC consent prompt is on the secure desktop",
+        attempt=0,
+        replans_used=0,
+    )
+
+    assert decision.action == RecoveryAction.REPLAN
+    assert "UAC" in decision.reason
